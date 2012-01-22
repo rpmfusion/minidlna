@@ -1,0 +1,144 @@
+Name:           minidlna
+Version:        1.0.22
+Release:        2%{?dist}
+Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
+
+Group:          System Environment/Daemons
+License:        GPLv2 
+URL:            http://sourceforge.net/projects/minidlna/
+Source0:        http://downloads.sourceforge.net/%{name}/%{name}_%{version}_src.tar.gz
+# Systemd unit file
+Source1:        %{name}.service
+# Debian man pages
+Source2:        %{name}-1.0.21-debian-manpages.tar.gz
+
+BuildRequires:  libuuid-devel
+BuildRequires:  ffmpeg-devel
+BuildRequires:  sqlite-devel
+BuildRequires:  libvorbis-devel
+BuildRequires:  flac-devel
+BuildRequires:  libid3tag-devel
+BuildRequires:  libjpeg-devel
+BuildRequires:  libexif-devel
+BuildRequires:  gettext
+BuildRequires:  systemd-units
+Requires(pre):  shadow-utils
+Requires(post): systemd-units
+Requires(preun): systemd-units
+Requires(postun): systemd-units
+
+%description
+MiniDLNA (aka ReadyDLNA) is server software with the aim of being fully 
+compliant with DLNA/UPnP-AV clients.
+
+The minidlna daemon serves media files (music, pictures, and video) to 
+clients on your network.  Example clients include applications such as 
+Totem and XBMC, and devices such as portable media players, smartphones, 
+and televisions.
+
+
+%prep
+%setup -q
+%setup -D -T -q -a 2
+
+# Honor RPM_OPT_FLAGS
+sed -i 's/CFLAGS = -Wall -g -O3/CFLAGS +=/' Makefile
+
+# Verbose Makefile
+sed -i 's/@$(CC)/$(CC)/' Makefile
+
+
+%build
+export CFLAGS="%{optflags}"
+make %{?_smp_mflags} 
+
+# Build language catalogs 
+pushd po
+for catsrc in *.po; do
+    lang="${catsrc%.po}"
+    msgfmt -o "$lang.mo" "$catsrc"
+done
+popd
+
+
+%install
+make install DESTDIR=%{buildroot}
+
+# Install systemd unit file
+mkdir -p %{buildroot}%{_unitdir}
+install -m 644 %{SOURCE1} %{buildroot}%{_unitdir}
+
+# Install man pages
+mkdir -p %{buildroot}%{_mandir}/man1
+install -m 644 debian-manpages/*.1 %{buildroot}%{_mandir}/man1/
+mkdir -p %{buildroot}%{_mandir}/man5
+install -m 644 debian-manpages/*.5 %{buildroot}%{_mandir}/man5/
+
+# Install language catalogs
+pushd po
+for catalog in *.mo; do
+    lang="${catalog%.mo}"
+    install -d -m 0755 "%{buildroot}%{_datadir}/locale/${lang}/LC_MESSAGES"
+    install -m 0644 "$catalog" "%{buildroot}%{_datadir}/locale/${lang}/LC_MESSAGES/minidlna.mo"
+done
+popd
+
+%find_lang %{name}
+
+
+%pre
+getent group minidlna >/dev/null || groupadd -r minidlna
+getent passwd minidlna >/dev/null || \
+useradd -r -g minidlna -d /dev/null -s /sbin/nologin \
+  -c "minidlna service account" minidlna
+exit 0
+
+
+%post
+if [ $1 -eq 1 ] ; then 
+    # Initial installation 
+    /bin/systemctl daemon-reload >/dev/null 2>&1 || :
+fi
+
+
+%preun
+if [ $1 -eq 0 ] ; then
+    # Package removal, not upgrade
+    /bin/systemctl --no-reload disable %{name}.service > /dev/null 2>&1 || :
+    /bin/systemctl stop %{name}.service > /dev/null 2>&1 || :
+fi
+
+
+%postun
+/bin/systemctl daemon-reload >/dev/null 2>&1 || :
+if [ $1 -ge 1 ] ; then
+    # Package upgrade, not uninstall
+    /bin/systemctl try-restart %{name}.service >/dev/null 2>&1 || :
+fi
+
+
+%files -f %{name}.lang
+%attr(-,minidlna,minidlna)%config(noreplace) %{_sysconfdir}/minidlna.conf
+%{_sbindir}/minidlna
+%{_unitdir}/minidlna.service
+%{_mandir}/man1/%{name}.1*
+%{_mandir}/man5/%{name}.conf.5*
+%doc LICENCE LICENCE.miniupnpd NEWS README TODO
+
+
+%changelog
+* Sun Jan 22 2012 Andrea Musuruane <musuruan@gmail.com> 1.0.22-2
+- Fixed systemd unit file
+
+* Sun Jan 15 2012 Andrea Musuruane <musuruan@gmail.com> 1.0.22-1
+- Updated to upstream 1.0.22
+- Removed default Fedora RPM features (defattr, BuildRoot, clean section)
+- Better consistent macro usage
+
+* Sat Jul 23 2011 Andrea Musuruane <musuruan@gmail.com> 1.0.21-1
+- Updated to upstream 1.0.21
+
+* Sat Jun 18 2011 Andrea Musuruane <musuruan@gmail.com> 1.0.20-1
+- First release
+- Used Debian man pages
+

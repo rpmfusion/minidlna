@@ -1,0 +1,11 @@
+[Unit]
+Description=MiniDLNA is a DLNA/UPnP-AV server software
+After=syslog.target local-fs.target network.target
+
+[Service]
+Type=forking
+PIDFile=/var/run/minidlna.pid
+ExecStart=/usr/sbin/minidlna -f /etc/minidlna.conf
+
+[Install]
+WantedBy=multi-user.target
