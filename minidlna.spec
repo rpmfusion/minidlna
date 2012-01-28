@@ -1,6 +1,6 @@
 Name:           minidlna
-Version:        1.0.22
-Release:        2%{?dist}
+Version:        1.0.23
+Release:        1%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 Group:          System Environment/Daemons
@@ -63,6 +63,7 @@ popd
 
 %install
 make install DESTDIR=%{buildroot}
+make install-conf DESTDIR=%{buildroot}
 
 # Install systemd unit file
 mkdir -p %{buildroot}%{_unitdir}
@@ -127,6 +128,9 @@ fi
 
 
 %changelog
+* Sat Jan 28 2012 Andrea Musuruane <musuruan@gmail.com> 1.0.23-1
+- Updated to upstream 1.0.23
+
 * Sun Jan 22 2012 Andrea Musuruane <musuruan@gmail.com> 1.0.22-2
 - Fixed systemd unit file
 
