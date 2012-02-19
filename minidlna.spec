@@ -1,5 +1,5 @@
 Name:           minidlna
-Version:        1.0.23
+Version:        1.0.24
 Release:        1%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
@@ -128,6 +128,9 @@ fi
 
 
 %changelog
+* Sun Feb 19 2012 Andrea Musuruane <musuruan@gmail.com> 1.0.24-1
+- Updated to upstream 1.0.24
+
 * Sat Jan 28 2012 Andrea Musuruane <musuruan@gmail.com> 1.0.23-1
 - Updated to upstream 1.0.23
 
