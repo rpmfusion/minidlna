@@ -1,6 +1,6 @@
 Name:           minidlna
 Version:        1.0.24
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 Group:          System Environment/Daemons
@@ -10,7 +10,9 @@ Source0:        http://downloads.sourceforge.net/%{name}/%{name}_%{version}_src.
 # Systemd unit file
 Source1:        %{name}.service
 # Debian man pages
-Source2:        %{name}-1.0.21-debian-manpages.tar.gz
+Source2:        %{name}-1.0.24-debian-manpages.tar.gz
+# tmpfiles.d configuration for the /var/run directory
+Source3:        %{name}-tmpfiles.conf 
 
 BuildRequires:  libuuid-devel
 BuildRequires:  ffmpeg-devel
@@ -46,6 +48,12 @@ sed -i 's/CFLAGS = -Wall -g -O3/CFLAGS +=/' Makefile
 
 # Verbose Makefile
 sed -i 's/@$(CC)/$(CC)/' Makefile
+
+# Edit the default config file to run the daemon with the minidlna user
+sed -i 's/#db_dir=\/var\/cache\/minidlna/db_dir=\/var\/cache\/minidlna/' \
+  %{name}.conf
+sed -i 's/#log_dir=\/var\/log/log_dir=\/var\/log\/minidlna/' \
+  %{name}.conf
 
 
 %build
@@ -84,6 +92,18 @@ for catalog in *.mo; do
 done
 popd
 
+# Install tmpfiles.d
+mkdir -p %{buildroot}%{_sysconfdir}/tmpfiles.d
+install -m 0644 %{SOURCE3} %{buildroot}%{_sysconfdir}/tmpfiles.d/%{name}.conf
+mkdir -p %{buildroot}%{_localstatedir}/run/
+install -d -m 0755 %{buildroot}%{_localstatedir}/run/%{name}/
+
+# Create cache and log directories
+mkdir -p %{buildroot}%{_localstatedir}/cache
+install -d -m 0755 %{buildroot}%{_localstatedir}/cache/%{name}/
+mkdir -p %{buildroot}%{_localstatedir}/log
+install -d -m 0755 %{buildroot}%{_localstatedir}/log/%{name}/
+
 %find_lang %{name}
 
 
@@ -119,15 +139,23 @@ fi
 
 
 %files -f %{name}.lang
-%attr(-,minidlna,minidlna)%config(noreplace) %{_sysconfdir}/minidlna.conf
+%attr(-,minidlna,minidlna) %config(noreplace) %{_sysconfdir}/minidlna.conf
 %{_sbindir}/minidlna
 %{_unitdir}/minidlna.service
 %{_mandir}/man1/%{name}.1*
 %{_mandir}/man5/%{name}.conf.5*
+%dir %attr(-,minidlna,minidlna) %{_localstatedir}/run/%{name}
+%config(noreplace) %{_sysconfdir}/tmpfiles.d/%{name}.conf
+%dir %attr(-,minidlna,minidlna) %{_localstatedir}/cache/%{name}/
+%dir %attr(-,minidlna,minidlna) %{_localstatedir}/log/%{name}/
 %doc LICENCE LICENCE.miniupnpd NEWS README TODO
 
 
 %changelog
+* Wed Apr 25 2012 Andrea Musuruane <musuruan@gmail.com> 1.0.24-2
+- Run the daemon with the minidlna user (BZ #2294)
+- Updated Debian man pages
+
 * Sun Feb 19 2012 Andrea Musuruane <musuruan@gmail.com> 1.0.24-1
 - Updated to upstream 1.0.24
 
