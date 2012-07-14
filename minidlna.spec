@@ -1,6 +1,6 @@
 Name:           minidlna
-Version:        1.0.24
-Release:        2%{?dist}
+Version:        1.0.25
+Release:        1%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 Group:          System Environment/Daemons
@@ -152,6 +152,12 @@ fi
 
 
 %changelog
+* Sat Jul 14 2012 Andrea Musuruane <musuruan@gmail.com> 1.0.25-1
+- Updated to upstream 1.0.25
+
+* Tue Jun 26 2012 Nicolas Chauvet <kwizart@gmail.com> - 1.0.24-3
+- Rebuilt for FFmpeg
+
 * Wed Apr 25 2012 Andrea Musuruane <musuruan@gmail.com> 1.0.24-2
 - Run the daemon with the minidlna user (BZ #2294)
 - Updated Debian man pages
