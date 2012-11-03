@@ -1,6 +1,6 @@
 Name:           minidlna
 Version:        1.0.25
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 Group:          System Environment/Daemons
@@ -13,6 +13,9 @@ Source1:        %{name}.service
 Source2:        %{name}-1.0.24-debian-manpages.tar.gz
 # tmpfiles.d configuration for the /var/run directory
 Source3:        %{name}-tmpfiles.conf 
+# Fix FTBFS for ffmpeg-1.0
+# http://inmmc.org/ftp/soft/minidlna.diff
+Patch0:         %{name}-1.0.25-ffmpeg10.patch
 
 BuildRequires:  libuuid-devel
 BuildRequires:  ffmpeg-devel
@@ -42,6 +45,7 @@ and televisions.
 %prep
 %setup -q
 %setup -D -T -q -a 2
+%patch0 -p1
 
 # Honor RPM_OPT_FLAGS
 sed -i 's/CFLAGS = -Wall -g -O3/CFLAGS +=/' Makefile
@@ -152,6 +156,10 @@ fi
 
 
 %changelog
+* Sat Nov 03 2012 Andrea Musuruane <musuruan@gmail.com> 1.0.25-2
+- Fixed FTBFS caused by ffmpeg 1.0
+- Updated minidlna.service I forgot to commit (BZ #2294)
+
 * Sat Jul 14 2012 Andrea Musuruane <musuruan@gmail.com> 1.0.25-1
 - Updated to upstream 1.0.25
 
