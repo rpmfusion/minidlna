@@ -1,6 +1,6 @@
 Name:           minidlna
 Version:        1.0.25
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 Group:          System Environment/Daemons
@@ -156,6 +156,9 @@ fi
 
 
 %changelog
+* Sat Nov 24 2012 Nicolas Chauvet <kwizart@gmail.com> - 1.0.25-3
+- Rebuilt for FFmpeg 1.0
+
 * Sat Nov 03 2012 Andrea Musuruane <musuruan@gmail.com> 1.0.25-2
 - Fixed FTBFS caused by ffmpeg 1.0
 - Updated minidlna.service I forgot to commit (BZ #2294)
