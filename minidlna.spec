@@ -1,21 +1,18 @@
 Name:           minidlna
-Version:        1.0.25
-Release:        3%{?dist}
+Version:        1.0.26
+Release:        1%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 Group:          System Environment/Daemons
 License:        GPLv2 
 URL:            http://sourceforge.net/projects/minidlna/
-Source0:        http://downloads.sourceforge.net/%{name}/%{name}_%{version}_src.tar.gz
+Source0:        http://downloads.sourceforge.net/%{name}/%{name}-%{version}.tar.gz
 # Systemd unit file
 Source1:        %{name}.service
 # Debian man pages
 Source2:        %{name}-1.0.24-debian-manpages.tar.gz
 # tmpfiles.d configuration for the /var/run directory
 Source3:        %{name}-tmpfiles.conf 
-# Fix FTBFS for ffmpeg-1.0
-# http://inmmc.org/ftp/soft/minidlna.diff
-Patch0:         %{name}-1.0.25-ffmpeg10.patch
 
 BuildRequires:  libuuid-devel
 BuildRequires:  ffmpeg-devel
@@ -45,13 +42,12 @@ and televisions.
 %prep
 %setup -q
 %setup -D -T -q -a 2
-%patch0 -p1
 
-# Honor RPM_OPT_FLAGS
-sed -i 's/CFLAGS = -Wall -g -O3/CFLAGS +=/' Makefile
+# Honor RPM_OPT_FLAGS and include ffmpeg headers
+sed -i 's!CFLAGS = -Wall -g -O3!CFLAGS += -I/usr/include/ffmpeg/!' Makefile
 
 # Verbose Makefile
-sed -i 's/@$(CC)/$(CC)/' Makefile
+sed -i 's/@$(CC)/$(CC)/;s/&& exit 0\; \\//;/echo "The following command failed:/d' Makefile
 
 # Edit the default config file to run the daemon with the minidlna user
 sed -i 's/#db_dir=\/var\/cache\/minidlna/db_dir=\/var\/cache\/minidlna/' \
@@ -156,6 +152,12 @@ fi
 
 
 %changelog
+* Wed May 08 2013 Andrea Musuruane <musuruan@gmail.com> - 1.0.26-1
+- Updated to upstream 1.0.26
+
+* Wed Jan 30 2013 Nicolas Chauvet <kwizart@gmail.com> - 1.0.25-4
+- Rebuilt for ffmpeg
+
 * Sat Nov 24 2012 Nicolas Chauvet <kwizart@gmail.com> - 1.0.25-3
 - Rebuilt for FFmpeg 1.0
 
