@@ -5,9 +5,8 @@ After=syslog.target local-fs.target network.target
 [Service]
 User=minidlna
 Group=minidlna
-Type=forking
-PIDFile=/var/run/minidlna/minidlna.pid
-ExecStart=/usr/sbin/minidlna -f /etc/minidlna.conf -P /var/run/minidlna/minidlna.pid
+Type=simple
+ExecStart=/usr/sbin/minidlnad -S
 
 [Install]
 WantedBy=multi-user.target

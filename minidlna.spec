@@ -1,18 +1,16 @@
 Name:           minidlna
-Version:        1.0.26
-Release:        3%{?dist}
+Version:        1.1.0
+Release:        1%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 Group:          System Environment/Daemons
 License:        GPLv2 
 URL:            http://sourceforge.net/projects/minidlna/
-Source0:        http://downloads.sourceforge.net/%{name}/%{name}-%{version}.tar.gz
+Source0:        http://downloads.sourceforge.net/%{name}/%{version}/%{name}-%{version}.tar.gz
 # Systemd unit file
 Source1:        %{name}.service
-# Debian man pages
-Source2:        %{name}-1.0.24-debian-manpages.tar.gz
-# tmpfiles.d configuration for the /var/run directory
-Source3:        %{name}-tmpfiles.conf 
+# tmpfiles configuration for the /run directory
+Source2:        %{name}-tmpfiles.conf 
 
 BuildRequires:  libuuid-devel
 BuildRequires:  ffmpeg-devel
@@ -41,62 +39,44 @@ and televisions.
 
 %prep
 %setup -q
-%setup -D -T -q -a 2
 
-# Honor RPM_OPT_FLAGS and include ffmpeg headers
-sed -i 's!CFLAGS = -Wall -g -O3!CFLAGS += -I/usr/include/ffmpeg/!' Makefile
-
-# Verbose Makefile
-sed -i 's/@$(CC)/$(CC)/;s/&& exit 0\; \\//;/echo "The following command failed:/d' Makefile
-
-# Edit the default config file to run the daemon with the minidlna user
-sed -i 's/#db_dir=\/var\/cache\/minidlna/db_dir=\/var\/cache\/minidlna/' \
-  %{name}.conf
-sed -i 's/#log_dir=\/var\/log/log_dir=\/var\/log\/minidlna/' \
+# Edit the default config file 
+sed -i 's/#log_dir=\/var\/log/#log_dir=\/var\/log\/minidlna/' \
   %{name}.conf
 
 
 %build
-export CFLAGS="%{optflags}"
-make %{?_smp_mflags} 
+%configure \
+  --disable-silent-rules \
+  --with-db-path=%{_localstatedir}/cache/%{name} \
+  --with-log-path=%{_localstatedir}/log/%{name} \
+  --enable-tivo
 
-# Build language catalogs 
-pushd po
-for catsrc in *.po; do
-    lang="${catsrc%.po}"
-    msgfmt -o "$lang.mo" "$catsrc"
-done
-popd
+make %{?_smp_mflags} 
 
 
 %install
 make install DESTDIR=%{buildroot}
-make install-conf DESTDIR=%{buildroot}
+
+# Install config file
+mkdir -p %{buildroot}%{_sysconfdir}
+install -m 644 minidlna.conf %{buildroot}%{_sysconfdir}
 
 # Install systemd unit file
 mkdir -p %{buildroot}%{_unitdir}
 install -m 644 %{SOURCE1} %{buildroot}%{_unitdir}
 
 # Install man pages
-mkdir -p %{buildroot}%{_mandir}/man1
-install -m 644 debian-manpages/*.1 %{buildroot}%{_mandir}/man1/
 mkdir -p %{buildroot}%{_mandir}/man5
-install -m 644 debian-manpages/*.5 %{buildroot}%{_mandir}/man5/
+install -m 644 minidlna.conf.5 %{buildroot}%{_mandir}/man5/
+mkdir -p %{buildroot}%{_mandir}/man8
+install -m 644 minidlnad.8 %{buildroot}%{_mandir}/man8/
 
-# Install language catalogs
-pushd po
-for catalog in *.mo; do
-    lang="${catalog%.mo}"
-    install -d -m 0755 "%{buildroot}%{_datadir}/locale/${lang}/LC_MESSAGES"
-    install -m 0644 "$catalog" "%{buildroot}%{_datadir}/locale/${lang}/LC_MESSAGES/minidlna.mo"
-done
-popd
-
-# Install tmpfiles.d
-mkdir -p %{buildroot}%{_sysconfdir}/tmpfiles.d
-install -m 0644 %{SOURCE3} %{buildroot}%{_sysconfdir}/tmpfiles.d/%{name}.conf
-mkdir -p %{buildroot}%{_localstatedir}/run/
-install -d -m 0755 %{buildroot}%{_localstatedir}/run/%{name}/
+# Install tmpfiles configuration
+mkdir -p %{buildroot}%{_tmpfilesdir}
+install -m 0644 %{SOURCE2} %{buildroot}%{_tmpfilesdir}/%{name}.conf
+mkdir -p %{buildroot}/run/
+install -d -m 0755 %{buildroot}/run/%{name}/
 
 # Create cache and log directories
 mkdir -p %{buildroot}%{_localstatedir}/cache
@@ -140,18 +120,22 @@ fi
 
 %files -f %{name}.lang
 %attr(-,minidlna,minidlna) %config(noreplace) %{_sysconfdir}/minidlna.conf
-%{_sbindir}/minidlna
+%{_sbindir}/minidlnad
 %{_unitdir}/minidlna.service
-%{_mandir}/man1/%{name}.1*
 %{_mandir}/man5/%{name}.conf.5*
-%dir %attr(-,minidlna,minidlna) %{_localstatedir}/run/%{name}
-%config(noreplace) %{_sysconfdir}/tmpfiles.d/%{name}.conf
+%{_mandir}/man8/minidlnad.8*
+%dir %attr(-,minidlna,minidlna) /run/%{name}
+%{_tmpfilesdir}/%{name}.conf
 %dir %attr(-,minidlna,minidlna) %{_localstatedir}/cache/%{name}/
 %dir %attr(-,minidlna,minidlna) %{_localstatedir}/log/%{name}/
-%doc LICENCE LICENCE.miniupnpd NEWS README TODO
+%doc AUTHORS COPYING LICENCE.miniupnpd NEWS README TODO
 
 
 %changelog
+* Sun Sep 15 2013 Andrea Musuruane <musuruan@gmail.com> - 1.1.0-1
+- Updated to upstream 1.1.0
+- Better systemd integration
+
 * Thu Aug 15 2013 Nicolas Chauvet <kwizart@gmail.com> - 1.0.26-3
 - Rebuilt for FFmpeg 2.0.x
 
