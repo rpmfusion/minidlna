@@ -1,6 +1,6 @@
 Name:           minidlna
-Version:        1.1.4
-Release:        3%{?dist}
+Version:        1.1.5
+Release:        1%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 Group:          System Environment/Daemons
@@ -132,6 +132,9 @@ fi
 
 
 %changelog
+* Sun Oct 04 2015 Andrea Musuruane <musuruan@gmail.com> - 1.1.5-1
+- Updated to upstream 1.1.5
+
 * Mon Oct 20 2014 Sérgio Basto <sergio@serjux.com> - 1.1.4-3
 - Rebuilt for FFmpeg 2.4.3
 
