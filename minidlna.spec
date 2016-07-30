@@ -1,6 +1,6 @@
 Name:           minidlna
 Version:        1.1.5
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 Group:          System Environment/Daemons
@@ -132,6 +132,9 @@ fi
 
 
 %changelog
+* Sat Jul 30 2016 Julian Sikorski <belegdol@fedoraproject.org> - 1.1.5-2
+- Rebuilt for ffmpeg-3.1.1
+
 * Sun Oct 04 2015 Andrea Musuruane <musuruan@gmail.com> - 1.1.5-1
 - Updated to upstream 1.1.5
 
