@@ -1,6 +1,6 @@
 Name:           minidlna
 Version:        1.1.5
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 Group:          System Environment/Daemons
@@ -11,6 +11,7 @@ Source0:        http://downloads.sourceforge.net/%{name}/%{version}/%{name}-%{ve
 Source1:        %{name}.service
 # tmpfiles configuration for the /run directory
 Source2:        %{name}-tmpfiles.conf 
+Patch0:         metadata-add-libavformat-57-compatibility.patch
 
 BuildRequires:  libuuid-devel
 BuildRequires:  ffmpeg-devel
@@ -38,7 +39,7 @@ and televisions.
 
 
 %prep
-%setup -q
+%autosetup -p1
 
 # Edit the default config file 
 sed -i 's/#log_dir=\/var\/log/#log_dir=\/var\/log\/minidlna/' \
@@ -132,6 +133,9 @@ fi
 
 
 %changelog
+* Thu Feb 16 2017 Leigh Scott <leigh123linux@googlemail.com> - 1.1.5-3
+- Patch for libavformat-57 compatibility
+
 * Sat Jul 30 2016 Julian Sikorski <belegdol@fedoraproject.org> - 1.1.5-2
 - Rebuilt for ffmpeg-3.1.1
 
