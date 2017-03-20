@@ -1,6 +1,6 @@
 Name:           minidlna
 Version:        1.1.5
-Release:        3%{?dist}
+Release:        4%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 Group:          System Environment/Daemons
@@ -133,6 +133,9 @@ fi
 
 
 %changelog
+* Mon Mar 20 2017 RPM Fusion Release Engineering <kwizart@rpmfusion.org> - 1.1.5-4
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_26_Mass_Rebuild
+
 * Thu Feb 16 2017 Leigh Scott <leigh123linux@googlemail.com> - 1.1.5-3
 - Patch for libavformat-57 compatibility
 
