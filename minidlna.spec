@@ -1,18 +1,18 @@
 Name:           minidlna
-Version:        1.1.5
-Release:        5%{?dist}
+Version:        1.2.0
+Release:        1%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 Group:          System Environment/Daemons
-License:        GPLv2 
+License:        GPLv2
 URL:            http://sourceforge.net/projects/minidlna/
 Source0:        http://downloads.sourceforge.net/%{name}/%{version}/%{name}-%{version}.tar.gz
 # Systemd unit file
 Source1:        %{name}.service
 # tmpfiles configuration for the /run directory
-Source2:        %{name}-tmpfiles.conf 
-Patch0:         metadata-add-libavformat-57-compatibility.patch
+Source2:        %{name}-tmpfiles.conf
 
+BuildRequires:  avahi-devel
 BuildRequires:  libuuid-devel
 BuildRequires:  ffmpeg-devel
 BuildRequires:  sqlite-devel
@@ -41,7 +41,7 @@ and televisions.
 %prep
 %autosetup -p1
 
-# Edit the default config file 
+# Edit the default config file
 sed -i 's/#log_dir=\/var\/log/#log_dir=\/var\/log\/minidlna/' \
   %{name}.conf
 
@@ -53,36 +53,36 @@ sed -i 's/#log_dir=\/var\/log/#log_dir=\/var\/log\/minidlna/' \
   --with-log-path=%{_localstatedir}/log/%{name} \
   --enable-tivo
 
-make %{?_smp_mflags} 
+%make_build
 
 
 %install
-make install DESTDIR=%{buildroot}
+%make_install
 
 # Install config file
-mkdir -p %{buildroot}%{_sysconfdir}
-install -m 644 minidlna.conf %{buildroot}%{_sysconfdir}
+mkdir -p %{buildroot}%{_sysconfdir}/
+install -m 644 minidlna.conf %{buildroot}%{_sysconfdir}/
 
 # Install systemd unit file
-mkdir -p %{buildroot}%{_unitdir}
-install -m 644 %{SOURCE1} %{buildroot}%{_unitdir}
+mkdir -p %{buildroot}%{_unitdir}/
+install -m 644 %{SOURCE1} %{buildroot}%{_unitdir}/
 
 # Install man pages
-mkdir -p %{buildroot}%{_mandir}/man5
+mkdir -p %{buildroot}%{_mandir}/man5/
 install -m 644 minidlna.conf.5 %{buildroot}%{_mandir}/man5/
-mkdir -p %{buildroot}%{_mandir}/man8
+mkdir -p %{buildroot}%{_mandir}/man8/
 install -m 644 minidlnad.8 %{buildroot}%{_mandir}/man8/
 
 # Install tmpfiles configuration
-mkdir -p %{buildroot}%{_tmpfilesdir}
+mkdir -p %{buildroot}%{_tmpfilesdir}/
 install -m 0644 %{SOURCE2} %{buildroot}%{_tmpfilesdir}/%{name}.conf
 mkdir -p %{buildroot}/run/
 install -d -m 0755 %{buildroot}/run/%{name}/
 
 # Create cache and log directories
-mkdir -p %{buildroot}%{_localstatedir}/cache
+mkdir -p %{buildroot}%{_localstatedir}/cache/
 install -d -m 0755 %{buildroot}%{_localstatedir}/cache/%{name}/
-mkdir -p %{buildroot}%{_localstatedir}/log
+mkdir -p %{buildroot}%{_localstatedir}/log/
 install -d -m 0755 %{buildroot}%{_localstatedir}/log/%{name}/
 
 %find_lang %{name}
@@ -97,8 +97,8 @@ exit 0
 
 
 %post
-if [ $1 -eq 1 ] ; then 
-    # Initial installation 
+if [ $1 -eq 1 ] ; then
+    # Initial installation
     /bin/systemctl daemon-reload >/dev/null 2>&1 || :
 fi
 
@@ -125,7 +125,7 @@ fi
 %{_unitdir}/minidlna.service
 %{_mandir}/man5/%{name}.conf.5*
 %{_mandir}/man8/minidlnad.8*
-%dir %attr(-,minidlna,minidlna) /run/%{name}
+%ghost %dir %attr(-,minidlna,minidlna) /run/%{name}/
 %{_tmpfilesdir}/%{name}.conf
 %dir %attr(-,minidlna,minidlna) %{_localstatedir}/cache/%{name}/
 %dir %attr(-,minidlna,minidlna) %{_localstatedir}/log/%{name}/
@@ -133,6 +133,10 @@ fi
 
 
 %changelog
+* Fri Jun 02 2017 Leigh Scott <leigh123linux@googlemail.com> - 1.2.0-1
+- Updated to upstream 1.2.0
+- Add build requires avahi-devel
+
 * Sat Apr 29 2017 Leigh Scott <leigh123linux@googlemail.com> - 1.1.5-5
 - Rebuild for ffmpeg update
 
