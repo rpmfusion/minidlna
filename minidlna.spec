@@ -1,9 +1,8 @@
 Name:           minidlna
 Version:        1.2.0
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
-Group:          System Environment/Daemons
 License:        GPLv2
 URL:            http://sourceforge.net/projects/minidlna/
 Source0:        http://downloads.sourceforge.net/%{name}/%{version}/%{name}-%{version}.tar.gz
@@ -22,11 +21,9 @@ BuildRequires:  libid3tag-devel
 BuildRequires:  libjpeg-devel
 BuildRequires:  libexif-devel
 BuildRequires:  gettext
-BuildRequires:  systemd-units
+BuildRequires:  systemd
 Requires(pre):  shadow-utils
-Requires(post): systemd-units
-Requires(preun): systemd-units
-Requires(postun): systemd-units
+%{?systemd_requires}
 
 %description
 MiniDLNA (aka ReadyDLNA) is server software with the aim of being fully 
@@ -61,29 +58,29 @@ sed -i 's/#log_dir=\/var\/log/#log_dir=\/var\/log\/minidlna/' \
 
 # Install config file
 mkdir -p %{buildroot}%{_sysconfdir}/
-install -m 644 minidlna.conf %{buildroot}%{_sysconfdir}/
+install -p -m 644 minidlna.conf %{buildroot}%{_sysconfdir}/
 
 # Install systemd unit file
 mkdir -p %{buildroot}%{_unitdir}/
-install -m 644 %{SOURCE1} %{buildroot}%{_unitdir}/
+install -p -m 644 %{SOURCE1} %{buildroot}%{_unitdir}/
 
 # Install man pages
 mkdir -p %{buildroot}%{_mandir}/man5/
-install -m 644 minidlna.conf.5 %{buildroot}%{_mandir}/man5/
+install -p -m 644 minidlna.conf.5 %{buildroot}%{_mandir}/man5/
 mkdir -p %{buildroot}%{_mandir}/man8/
-install -m 644 minidlnad.8 %{buildroot}%{_mandir}/man8/
+install -p -m 644 minidlnad.8 %{buildroot}%{_mandir}/man8/
 
 # Install tmpfiles configuration
 mkdir -p %{buildroot}%{_tmpfilesdir}/
-install -m 0644 %{SOURCE2} %{buildroot}%{_tmpfilesdir}/%{name}.conf
+install -p -m 644 %{SOURCE2} %{buildroot}%{_tmpfilesdir}/%{name}.conf
 mkdir -p %{buildroot}/run/
-install -d -m 0755 %{buildroot}/run/%{name}/
+install -d -m 755 %{buildroot}/run/%{name}/
 
 # Create cache and log directories
 mkdir -p %{buildroot}%{_localstatedir}/cache/
-install -d -m 0755 %{buildroot}%{_localstatedir}/cache/%{name}/
+install -d -m 755 %{buildroot}%{_localstatedir}/cache/%{name}/
 mkdir -p %{buildroot}%{_localstatedir}/log/
-install -d -m 0755 %{buildroot}%{_localstatedir}/log/%{name}/
+install -d -m 755 %{buildroot}%{_localstatedir}/log/%{name}/
 
 %find_lang %{name}
 
@@ -97,26 +94,15 @@ exit 0
 
 
 %post
-if [ $1 -eq 1 ] ; then
-    # Initial installation
-    /bin/systemctl daemon-reload >/dev/null 2>&1 || :
-fi
+%systemd_post %{name}.service
 
 
 %preun
-if [ $1 -eq 0 ] ; then
-    # Package removal, not upgrade
-    /bin/systemctl --no-reload disable %{name}.service > /dev/null 2>&1 || :
-    /bin/systemctl stop %{name}.service > /dev/null 2>&1 || :
-fi
+%systemd_preun %{name}.service
 
 
 %postun
-/bin/systemctl daemon-reload >/dev/null 2>&1 || :
-if [ $1 -ge 1 ] ; then
-    # Package upgrade, not uninstall
-    /bin/systemctl try-restart %{name}.service >/dev/null 2>&1 || :
-fi
+%systemd_postun_with_restart %{name}.service
 
 
 %files -f %{name}.lang
@@ -125,7 +111,7 @@ fi
 %{_unitdir}/minidlna.service
 %{_mandir}/man5/%{name}.conf.5*
 %{_mandir}/man8/minidlnad.8*
-%ghost %dir %attr(-,minidlna,minidlna) /run/%{name}/
+%dir %attr(-,minidlna,minidlna) /run/%{name}/
 %{_tmpfilesdir}/%{name}.conf
 %dir %attr(-,minidlna,minidlna) %{_localstatedir}/cache/%{name}/
 %dir %attr(-,minidlna,minidlna) %{_localstatedir}/log/%{name}/
@@ -133,6 +119,12 @@ fi
 
 
 %changelog
+* Sun Jun 11 2017 Andrea Musuruane <musuruan@gmail.com> - 1.2.0-2
+- Fixed systemd service unit configuration (#4517)
+- Updated systemd snippets
+- Preserve timestamps
+- Dropped obsolete Group tag
+
 * Fri Jun 02 2017 Leigh Scott <leigh123linux@googlemail.com> - 1.2.0-1
 - Updated to upstream 1.2.0
 - Add build requires avahi-devel
