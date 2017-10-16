@@ -1,6 +1,6 @@
 Name:           minidlna
 Version:        1.2.1
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 License:        GPLv2
@@ -119,6 +119,9 @@ exit 0
 
 
 %changelog
+* Mon Oct 16 2017 Leigh Scott <leigh123linux@googlemail.com> - 1.2.1-2
+- Rebuild for ffmpeg update
+
 * Thu Sep 21 2017 Andrea Musuruane <musuruan@gmail.com> - 1.2.1-1
 - Updated to upstream 1.2.1
 
