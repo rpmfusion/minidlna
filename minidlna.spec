@@ -1,6 +1,6 @@
 Name:           minidlna
 Version:        1.2.1
-Release:        6%{?dist}
+Release:        7%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 License:        GPLv2
@@ -119,6 +119,9 @@ exit 0
 
 
 %changelog
+* Fri Jul 27 2018 RPM Fusion Release Engineering <leigh123linux@gmail.com> - 1.2.1-7
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_29_Mass_Rebuild
+
 * Mon Apr 23 2018 Leigh Scott <leigh123linux@googlemail.com> - 1.2.1-6
 - Rebuild for ffmpeg-4.0 release
 
