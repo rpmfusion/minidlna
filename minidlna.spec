@@ -115,7 +115,8 @@ exit 0
 %{_tmpfilesdir}/%{name}.conf
 %dir %attr(-,minidlna,minidlna) %{_localstatedir}/cache/%{name}/
 %dir %attr(-,minidlna,minidlna) %{_localstatedir}/log/%{name}/
-%doc AUTHORS COPYING LICENCE.miniupnpd NEWS README TODO
+%license COPYING LICENCE.miniupnpd
+%doc AUTHORS NEWS README TODO
 
 
 %changelog
