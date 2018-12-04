@@ -1,6 +1,7 @@
 [Unit]
 Description=MiniDLNA is a DLNA/UPnP-AV server software
-After=syslog.target local-fs.target network.target
+After=network-online.target syslog.target local-fs.target
+Wants=network-online.target
 
 [Service]
 User=minidlna
