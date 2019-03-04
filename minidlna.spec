@@ -11,6 +11,7 @@ Source1:        %{name}.service
 # tmpfiles configuration for the /run directory
 Source2:        %{name}-tmpfiles.conf
 
+BuildRequires:  gcc
 BuildRequires:  avahi-devel
 BuildRequires:  libuuid-devel
 BuildRequires:  ffmpeg-devel
