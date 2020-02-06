@@ -1,3 +1,5 @@
+%define _legacy_common_support 1
+
 Name:           minidlna
 Version:        1.2.1
 Release:        10%{?dist}
