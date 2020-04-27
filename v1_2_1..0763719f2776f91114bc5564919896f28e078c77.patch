@@ -1,0 +1,4427 @@
+diff --git a/Makefile.am b/Makefile.am
+index 0b68e47..1d7d73f 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -30,6 +30,12 @@ minidlnad_SOURCES = minidlna.c upnphttp.c upnpdescgen.c upnpsoap.c \
+ 			playlist.c image_utils.c albumart.c log.c \
+ 			containers.c avahi.c tagutils/tagutils.c
+ 
++if HAVE_KQUEUE
++minidlnad_SOURCES += kqueue.c monitor_kqueue.c
++else
++minidlnad_SOURCES += select.c
++endif
++
+ if HAVE_VORBISFILE
+ vorbislibs = -lvorbis -logg
+ else
+diff --git a/README b/README
+index 31c7ca3..f7fe004 100644
+--- a/README
++++ b/README
+@@ -18,9 +18,6 @@ serves multimedia content to compatible clients on the network.
+ See http://www.upnp.org/ for more details on UPnP
+ and http://www.dlna.org/ for mode details on DLNA.
+ 
+-See the INSTALL file for instructions on compiling, installing,
+-and configuring minidlna.
+-
+ Prerequisites
+ ==================
+ 
+diff --git a/clients.c b/clients.c
+index b920258..543835e 100644
+--- a/clients.c
++++ b/clients.c
+@@ -20,6 +20,7 @@
+ #include <time.h>
+ 
+ #include "clients.h"
++#include "event.h"
+ #include "getifaddr.h"
+ #include "log.h"
+ 
+@@ -80,6 +81,15 @@ struct client_type_s client_types[] =
+ 	  EUserAgent
+ 	},
+ 
++	/* Samsung Series [Q] TVs work wit milliseconds for bookmarks */
++	/* User-Agent: DLNADOC/1.50 SEC_HHP_[TV] Samsung Q7 Series (49)/1.0 */
++	{ ESamsungSeriesQ,
++	  FLAG_SAMSUNG | FLAG_DLNA | FLAG_NO_RESIZE | FLAG_SAMSUNG_DCM10 | FLAG_CAPTION_RES | FLAG_CONVERT_MS,
++	  "Samsung Series [Q]",
++	  "SEC_HHP_[TV] Samsung Q",
++	  EUserAgent
++	},
++
+ 	/* User-Agent: DLNADOC/1.50 SEC_HHP_[TV]UE40D7000/1.0 */
+ 	/* User-Agent: DLNADOC/1.50 SEC_HHP_ Family TV/1.0 */
+ 	/* USER-AGENT: DLNADOC/1.50 SEC_HHP_[TV] UE65JU7000/1.0 UPnP/1.0 */
+diff --git a/clients.h b/clients.h
+index f982ea5..43762bd 100644
+--- a/clients.h
++++ b/clients.h
+@@ -38,8 +38,10 @@
+ #define FLAG_FORCE_SORT         0x00000800
+ #define FLAG_CAPTION_RES        0x00001000
+ #define FLAG_SKIP_DLNA_PN       0x00002000 /* during browsing */
++#define FLAG_CONVERT_MS         0x00004000 /* convert ms to s */
+ /* Response-related flags */
+-#define FLAG_HAS_CAPTIONS       0x80000000
++#define FLAG_HAS_CAPTIONS       0x10000000
++#define RESPONSE_TRUNCATED      0x80000000
+ #define RESPONSE_FLAGS          0xF0000000
+ 
+ enum match_types {
+@@ -69,6 +71,7 @@ enum client_types {
+ 	ESamsungSeriesA,
+ 	ESamsungSeriesB,
+ 	ESamsungSeriesCDEBDP,
++	ESamsungSeriesQ,
+ 	ESamsungSeriesCDE,
+ 	ESamsungBDJ5500,
+ 	ESonyBDP,
+diff --git a/configure.ac b/configure.ac
+index f343d21..1410a94 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -68,6 +68,7 @@ AC_C_BIGENDIAN
+ AC_FUNC_FORK
+ AC_FUNC_LSTAT_FOLLOWS_SLASHED_SYMLINK
+ AC_CHECK_FUNCS([gethostname getifaddrs gettimeofday inet_ntoa memmove memset mkdir realpath select sendfile setlocale socket strcasecmp strchr strdup strerror strncasecmp strpbrk strrchr strstr strtol strtoul])
++AC_CHECK_DECLS([SEEK_HOLE])
+ 
+ #
+ # Check for struct ip_mreqn
+@@ -512,6 +513,8 @@ AC_CHECK_FUNCS(inotify_init, AC_DEFINE(HAVE_INOTIFY,1,[Whether kernel has inotif
+          ])
+ ])
+ 
++AC_CHECK_FUNCS(kqueue, AM_CONDITIONAL(HAVE_KQUEUE, true), AM_CONDITIONAL(HAVE_KQUEUE, false))
++
+ ################################################################################################################
+ ### Build Options
+ 
+diff --git a/event.h b/event.h
+new file mode 100644
+index 0000000..2e677f3
+--- /dev/null
++++ b/event.h
+@@ -0,0 +1,54 @@
++#include "config.h"
++
++#ifdef HAVE_KQUEUE
++#include <sys/types.h>
++#include <sys/event.h>
++#endif
++
++struct event;
++
++typedef enum {
++#ifdef HAVE_KQUEUE
++	EVENT_READ =	EVFILT_READ,
++	EVENT_WRITE =	EVFILT_WRITE,
++	EVENT_VNODE =	EVFILT_VNODE,
++#else
++	EVENT_READ,
++	EVENT_WRITE,
++#endif
++} event_t;
++
++#define	EV_FLAG_CLOSING	0x00000001
++
++typedef	void	event_process_t(struct event *);
++#ifdef HAVE_KQUEUE
++typedef	void	event_vnode_process_t(struct event *, u_int);
++#endif
++
++struct event {
++	int		 fd;
++	int		 index;
++	event_t		 rdwr;
++	union {
++		event_process_t		*process;
++#ifdef HAVE_KQUEUE
++		event_vnode_process_t	*process_vnode;
++#endif
++	};
++	void		*data;
++};
++
++typedef	int	event_module_add_t(struct event *);
++typedef	int	event_module_del_t(struct event *, int flags);
++typedef int	event_module_init_t(void);
++typedef void	event_module_fini_t(void);
++typedef int	event_module_process_t(u_long);
++struct event_module {
++	event_module_add_t	*add;
++	event_module_del_t	*del;
++	event_module_process_t	*process;
++	event_module_init_t	*init;
++	event_module_fini_t	*fini;
++};
++
++extern struct event_module event_module;
+diff --git a/getifaddr.c b/getifaddr.c
+index f0d3af3..2d9474c 100644
+--- a/getifaddr.c
++++ b/getifaddr.c
+@@ -43,6 +43,7 @@
+ #endif
+ 
+ #include "config.h"
++#include "event.h"
+ #if HAVE_GETIFADDRS
+ # include <ifaddrs.h>
+ # ifdef __linux__
+@@ -204,9 +205,13 @@ getsyshwaddr(char *buf, int len)
+ 				continue;
+ 			memcpy(mac, ifr.ifr_hwaddr.sa_data, 6);
+ #else
++			if (p->ifa_addr->sa_family != AF_LINK)
++				continue;
+ 			struct sockaddr_dl *sdl;
+ 			sdl = (struct sockaddr_dl*)p->ifa_addr;
+-			memcpy(mac, LLADDR(sdl), sdl->sdl_alen);
++			if (sdl->sdl_alen != 6)
++				continue;
++			memcpy(mac, LLADDR(sdl), 6);
+ #endif
+ 			if (MACADDR_IS_ZERO(mac))
+ 				continue;
+@@ -377,9 +382,10 @@ OpenAndConfMonitorSocket(void)
+ }
+ 
+ void
+-ProcessMonitorEvent(int s)
++ProcessMonitorEvent(struct event *ev)
+ {
+ #ifdef HAVE_NETLINK
++	int s = ev->fd;
+ 	int len;
+ 	char buf[4096];
+ 	struct nlmsghdr *nlh;
+diff --git a/getifaddr.h b/getifaddr.h
+index a2447f7..5631360 100644
+--- a/getifaddr.h
++++ b/getifaddr.h
+@@ -43,7 +43,7 @@ int get_remote_mac(struct in_addr ip_addr, unsigned char *mac);
+ void reload_ifaces(int notify);
+ 
+ int OpenAndConfMonitorSocket();
+-void ProcessMonitorEvent(int s);
++void ProcessMonitorEvent(struct event *);
+ 
+ #endif
+ 
+diff --git a/kqueue.c b/kqueue.c
+new file mode 100644
+index 0000000..67b2c86
+--- /dev/null
++++ b/kqueue.c
+@@ -0,0 +1,245 @@
++/*
++ * Copyright (c) 2017 Gleb Smirnoff <glebius@FreeBSD.org>
++ * Copyright (c) 2002-2017 Igor Sysoev
++ * Copyright (c) 2011-2017 Nginx, Inc.
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ */
++
++#include <sys/types.h>
++#include <sys/event.h>
++#include <assert.h>
++#include <errno.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <unistd.h>
++
++#include "event.h"
++#include "log.h"
++
++static int kqueue_set(struct event *, short, u_short, u_int);
++
++static event_module_init_t kqueue_init;
++static event_module_fini_t kqueue_fini;
++static event_module_add_t kqueue_add;
++static event_module_del_t kqueue_del;
++static event_module_process_t kqueue_process;
++
++static int kq;
++static struct kevent *change_list;
++static struct kevent *event_list;
++static u_int nchanges;
++
++#define	MAXCHANGES	128
++#define	MAXEVENTS	128
++
++struct event_module event_module = {
++	.add =		kqueue_add,
++	.del =		kqueue_del,
++	.process =	kqueue_process,
++	.init =		kqueue_init,
++	.fini =		kqueue_fini,
++};
++
++static int
++kqueue_init(void)
++{
++
++	kq = kqueue();
++	if (kq == -1)
++		return (errno);
++
++	change_list = calloc(MAXCHANGES, sizeof(struct kevent));
++	event_list = calloc(MAXEVENTS, sizeof(struct kevent));
++	if (change_list == NULL || event_list == NULL)
++		return (ENOMEM);
++
++	nchanges = 0;
++
++	return (0);
++}
++
++static void
++kqueue_fini()
++{
++
++	(void )close(kq);
++	kq = -1;
++
++	free(change_list);
++	free(event_list);
++	change_list = NULL;
++	event_list = NULL;
++	nchanges = 0;
++}
++
++static int
++kqueue_add(struct event *ev)
++{
++	u_int fflags;
++	u_short flags;
++
++	if (ev->rdwr == EVFILT_VNODE) {
++		flags = EV_ADD | EV_ENABLE | EV_CLEAR;
++		fflags = NOTE_DELETE | NOTE_WRITE | NOTE_EXTEND;
++	} else {
++		flags = EV_ADD | EV_ENABLE;
++		fflags = 0;
++	}
++
++	DPRINTF(E_DEBUG, L_GENERAL, "kqueue_add %d\n", ev->fd);
++	return (kqueue_set(ev, ev->rdwr, flags, fflags));
++}
++
++static int
++kqueue_del(struct event *ev, int flags)
++{
++
++        /*
++	 * If the event is still not passed to a kernel,
++	 * we will not pass it.
++	 */
++	assert(ev->fd >= 0);
++	if (ev->index < nchanges &&
++	    change_list[ev->index].udata == ev) {
++		if (ev->index < --nchanges) {
++			struct event *ev0;
++
++			ev0 = (struct event *)change_list[nchanges].udata;
++			change_list[ev->index] = change_list[nchanges];
++			ev0->index = ev->index;
++		}
++		return (0);
++	}
++
++	/*
++	 * when the file descriptor is closed the kqueue automatically deletes
++	 * its filters so we do not need to delete explicitly the event
++	 * before the closing the file descriptor.
++	 */
++	if (flags & EV_FLAG_CLOSING)
++		return (0);
++
++	DPRINTF(E_DEBUG, L_GENERAL, "kqueue_del %d\n", ev->fd);
++	return (kqueue_set(ev, ev->rdwr, EV_DELETE, 0));
++}
++
++static int
++kqueue_set(struct event *ev, short filter, u_short flags, u_int fflags)
++{
++	struct kevent *kev;
++	struct timespec ts;
++
++	if (nchanges >= MAXCHANGES) {
++		DPRINTF(E_INFO, L_GENERAL, "kqueue change list is filled up\n");
++
++		ts.tv_sec = 0;
++		ts.tv_nsec = 0;
++
++		if (kevent(kq, change_list, (int) nchanges, NULL, 0, &ts) == -1) {
++			DPRINTF(E_ERROR, L_GENERAL,"kevent() failed: %s\n", strerror(errno));
++			return (errno);
++		}
++		nchanges = 0;
++	}
++
++	kev = &change_list[nchanges];
++	kev->ident = ev->fd;
++	kev->filter = filter;
++	kev->flags = flags;
++	kev->udata = ev;
++	kev->fflags = fflags;
++	kev->data = 0;
++
++	ev->index = nchanges++;
++
++	return (0);
++}
++
++static int
++kqueue_process(u_long timer)
++{
++	struct event *ev;
++	int events, n, i;
++	struct timespec ts, *tp;
++
++	n = (int) nchanges;
++	nchanges = 0;
++
++	if (timer == 0) {
++		tp = NULL;
++	} else {
++		ts.tv_sec = timer / 1000;
++		ts.tv_nsec = (timer % 1000) * 1000000;
++		tp = &ts;
++	}
++
++	DPRINTF(E_DEBUG, L_GENERAL, "kevent timer: %lu, changes: %d\n",
++	    timer, n);
++
++	events = kevent(kq, change_list, n, event_list, MAXEVENTS, tp);
++
++	if (events == -1) {
++		if (errno == EINTR)
++			return (errno);
++		DPRINTF(E_FATAL, L_GENERAL, "kevent(): %s. EXITING\n", strerror(errno));
++	}
++
++	DPRINTF(E_DEBUG, L_GENERAL, "kevent events: %d\n", events);
++
++	if (events == 0) {
++		if (timer != 0)
++			return (0);
++		DPRINTF(E_FATAL, L_GENERAL, "kevent() returned no events. EXITING\n");
++	}
++
++	for (i = 0; i < events; i++) {
++		if (event_list[i].flags & EV_ERROR) {
++			DPRINTF(E_ERROR, L_GENERAL,
++			    "kevent() error %d on %d filter:%d flags:0x%x\n",
++			    (int)event_list[i].data, (int)event_list[i].ident,
++			    event_list[i].filter, event_list[i].flags);
++			continue;
++		}
++
++		ev = (struct event *)event_list[i].udata;
++
++		switch (event_list[i].filter) {
++		case EVFILT_READ:
++		case EVFILT_WRITE:
++			ev->process(ev);
++			break;
++		case EVFILT_VNODE:
++			ev->process_vnode(ev, event_list[i].fflags);
++			break;
++		default:
++			DPRINTF(E_ERROR, L_GENERAL,
++			    "unexpected kevent() filter %d",
++			    event_list[i].filter);
++			continue;
++		}
++	}
++
++	return (0);
++}
+diff --git a/log.c b/log.c
+index f80e6d4..a989904 100644
+--- a/log.c
++++ b/log.c
+@@ -63,28 +63,46 @@ log_close(void)
+ 		fclose(log_fp);
+ }
+ 
+-int find_matching_name(const char* str, const char* names[]) {
+-	if (str == NULL) return -1;
++void
++log_reopen(void)
++{
++	if (log_path[0] && log_fp)
++	{
++		char logfile[1048];
++		snprintf(logfile, sizeof(logfile), "%s/" LOGFILE_NAME, log_path);
++		fclose(log_fp);
++		log_fp = fopen(logfile, "a");
++		DPRINTF(E_INFO, L_GENERAL, "Reopened log file\n");
++	}
++}
+ 
+-	const char* start = strpbrk(str, ",=");
+-	int level, c = (start != NULL) ? start - str : strlen(str);
++int find_matching_name(const char* str, const char* names[])
++{
++	const char *start;
++	int level, c;
++
++	if (!str)
++		return -1;
++
++	start = strpbrk(str, ",=");
++	c = start ? start - str : strlen(str);
+ 	for (level = 0; names[level] != 0; level++) {
+-		if (!(strncasecmp(names[level], str, c)))
++		if (!strncasecmp(names[level], str, c))
+ 			return level;
+ 	}
+ 	return -1;
+ }
+ 
+ int
+-log_init(const char *fname, const char *debug)
++log_init(const char *debug)
+ {
+ 	int i;
+-	FILE *fp;
++	FILE *fp = NULL;
+ 
+ 	int level = find_matching_name(debug, level_name);
+ 	int default_log_level = (level == -1) ? _default_log_level : level;
+ 
+-	for (i=0; i<L_MAX; i++)
++	for (i = 0; i < L_MAX; i++)
+ 		log_level[i] = default_log_level;
+ 
+ 	if (debug)
+@@ -117,12 +135,15 @@ log_init(const char *fname, const char *debug)
+ 		}
+ 	}
+ 
+-	if (!fname)					// use default i.e. stdout
+-		return 0;
+-
+-	if (!(fp = fopen(fname, "a")))
+-		return 1;
++	if (log_path[0])
++	{
++		char logfile[1048];
++		snprintf(logfile, sizeof(logfile), "%s/" LOGFILE_NAME, log_path);
++		if (!(fp = fopen(logfile, "a")))
++			return -1;
++	}
+ 	log_fp = fp;
++
+ 	return 0;
+ }
+ 
+diff --git a/log.h b/log.h
+index 6037af9..723c63b 100644
+--- a/log.h
++++ b/log.h
+@@ -44,8 +44,9 @@ enum _log_facility
+ };
+ 
+ extern int log_level[L_MAX];
+-extern int log_init(const char *fname, const char *debug);
++extern int log_init(const char *debug);
+ extern void log_close(void);
++extern void log_reopen(void);
+ extern void log_err(int level, enum _log_facility facility, char *fname, int lineno, char *fmt, ...)
+ 	__attribute__((__format__ (__printf__, 5, 6)));
+ 
+diff --git a/metadata.c b/metadata.c
+index 8a10c77..9cd86dc 100644
+--- a/metadata.c
++++ b/metadata.c
+@@ -156,7 +156,7 @@ check_for_captions(const char *path, int64_t detailID)
+ 	}
+ }
+ 
+-void
++static void
+ parse_nfo(const char *path, metadata_t *m)
+ {
+ 	FILE *nfo;
+@@ -237,6 +237,14 @@ parse_nfo(const char *path, metadata_t *m)
+ 		free(esc_tag);
+ 	}
+ 
++	val = GetValueFromNameValueList(&xml, "season");
++	if (val)
++		m->disc = atoi(val);
++
++	val = GetValueFromNameValueList(&xml, "episode");
++	if (val)
++		m->track = atoi(val);
++
+ 	ClearNameValueList(&xml);
+ 	free(buf);
+ }
+@@ -345,6 +353,16 @@ GetAudioMetadata(const char *path, const char *name)
+ 		strcpy(type, "pcm");
+ 		m.mime = strdup("audio/L16");
+ 	}
++	else if( ends_with(path, ".dsf") )
++	{
++		strcpy(type, "dsf");
++		m.mime = strdup("audio/x-dsd");
++	}
++	else if( ends_with(path, ".dff") )
++	{
++		strcpy(type, "dff");
++		m.mime = strdup("audio/x-dsd");
++	}
+ 	else
+ 	{
+ 		DPRINTF(E_WARN, L_METADATA, "Unhandled file extension on %s\n", path);
+@@ -1499,10 +1517,8 @@ video_no_dlna:
+ 	if( ext )
+ 	{
+ 		strcpy(ext+1, "nfo");
+-		if( access(nfo, F_OK) == 0 )
+-		{
++		if( access(nfo, R_OK) == 0 )
+ 			parse_nfo(nfo, &m);
+-		}
+ 	}
+ 
+ 	if( !m.mime )
+@@ -1539,19 +1555,43 @@ video_no_dlna:
+ 		strip_ext(m.title);
+ 	}
+ 
++	if (!m.disc && !m.track)
++	{
++		/* Search for Season and Episode in the filename */
++		char *p = (char*)name, *s;
++		while ((s = strpbrk(p, "Ss")))
++		{
++			unsigned season = strtoul(s+1, &p, 10);
++			unsigned episode = 0;
++			if (season > 0 && p)
++			{
++				while (isblank(*p) || ispunct(*p))
++					p++;
++				if (*p == 'E' || *p == 'e')
++					episode = strtoul(p+1, NULL, 10);
++			}
++			if (season && episode)
++			{
++				m.disc = season;
++				m.track = episode;
++			}
++			p = s + 1;
++		}
++	}
++
+ 	album_art = find_album_art(path, m.thumb_data, m.thumb_size);
+ 	freetags(&video);
+ 	lav_close(ctx);
+ 
+ 	ret = sql_exec(db, "INSERT into DETAILS"
+ 	                   " (PATH, SIZE, TIMESTAMP, DURATION, DATE, CHANNELS, BITRATE, SAMPLERATE, RESOLUTION,"
+-	                   "  TITLE, CREATOR, ARTIST, GENRE, COMMENT, DLNA_PN, MIME, ALBUM_ART) "
++	                   "  TITLE, CREATOR, ARTIST, GENRE, COMMENT, DLNA_PN, MIME, ALBUM_ART, DISC, TRACK) "
+ 	                   "VALUES"
+-	                   " (%Q, %lld, %lld, %Q, %Q, %u, %u, %u, %Q, '%q', %Q, %Q, %Q, %Q, %Q, '%q', %lld);",
++	                   " (%Q, %lld, %lld, %Q, %Q, %u, %u, %u, %Q, '%q', %Q, %Q, %Q, %Q, %Q, '%q', %lld, %u, %u);",
+ 	                   path, (long long)file.st_size, (long long)file.st_mtime, m.duration,
+ 	                   m.date, m.channels, m.bitrate, m.frequency, m.resolution,
+ 	                   m.title, m.creator, m.artist, m.genre, m.comment, m.dlna_pn,
+-	                   m.mime, album_art);
++	                   m.mime, album_art, m.disc, m.track);
+ 	if( ret != SQLITE_OK )
+ 	{
+ 		DPRINTF(E_ERROR, L_METADATA, "Error inserting details for '%s'!\n", path);
+diff --git a/minidlna.c b/minidlna.c
+index 10b4806..5efcd27 100644
+--- a/minidlna.c
++++ b/minidlna.c
+@@ -68,6 +68,7 @@
+ #include <limits.h>
+ #include <libgen.h>
+ #include <pwd.h>
++#include <grp.h>
+ 
+ #include "config.h"
+ 
+@@ -76,6 +77,7 @@
+ #include <libintl.h>
+ #endif
+ 
++#include "event.h"
+ #include "upnpglobalvars.h"
+ #include "sql.h"
+ #include "upnphttp.h"
+@@ -91,6 +93,7 @@
+ #include "upnpevents.h"
+ #include "scanner.h"
+ #include "monitor.h"
++#include "libav.h"
+ #include "log.h"
+ #include "tivo_beacon.h"
+ #include "tivo_utils.h"
+@@ -100,7 +103,9 @@
+ # warning "Your SQLite3 library appears to be too old!  Please use 3.5.1 or newer."
+ # define sqlite3_threadsafe() 0
+ #endif
+- 
++
++static LIST_HEAD(httplisthead, upnphttp) upnphttphead;
++
+ /* OpenAndConfHTTPSocket() :
+  * setup the socket used to handle incoming HTTP connections. */
+ static int
+@@ -145,6 +150,46 @@ OpenAndConfHTTPSocket(unsigned short port)
+ 	return s;
+ }
+ 
++/* ProcessListen() :
++ * accept incoming HTTP connection. */
++static void
++ProcessListen(struct event *ev)
++{
++	int shttp;
++	socklen_t clientnamelen;
++	struct sockaddr_in clientname;
++	clientnamelen = sizeof(struct sockaddr_in);
++
++	shttp = accept(ev->fd, (struct sockaddr *)&clientname, &clientnamelen);
++	if (shttp<0)
++	{
++		DPRINTF(E_ERROR, L_GENERAL, "accept(http): %s\n", strerror(errno));
++	}
++	else
++	{
++		struct upnphttp * tmp = 0;
++		DPRINTF(E_DEBUG, L_GENERAL, "HTTP connection from %s:%d\n",
++			inet_ntoa(clientname.sin_addr),
++			ntohs(clientname.sin_port) );
++		/*if (fcntl(shttp, F_SETFL, O_NONBLOCK) < 0) {
++			DPRINTF(E_ERROR, L_GENERAL, "fcntl F_SETFL, O_NONBLOCK\n");
++		}*/
++		/* Create a new upnphttp object and add it to
++		 * the active upnphttp object list */
++		tmp = New_upnphttp(shttp);
++		if (tmp)
++		{
++			tmp->clientaddr = clientname.sin_addr;
++			LIST_INSERT_HEAD(&upnphttphead, tmp, entries);
++		}
++		else
++		{
++			DPRINTF(E_ERROR, L_GENERAL, "New_upnphttp() failed\n");
++			close(shttp);
++		}
++	}
++}
++
+ /* Handler for the SIGTERM signal (kill) 
+  * SIGINT is also handled */
+ static void
+@@ -170,9 +215,10 @@ static void
+ sighup(int sig)
+ {
+ 	signal(sig, sighup);
+-	DPRINTF(E_WARN, L_GENERAL, "received signal %d, re-read\n", sig);
++	DPRINTF(E_WARN, L_GENERAL, "received signal %d, reloading\n", sig);
+ 
+ 	reload_ifaces(1);
++	log_reopen();
+ }
+ 
+ /* record the startup time */
+@@ -245,8 +291,7 @@ getfriendlyname(char *buf, int len)
+ #ifndef STATIC // Disable for static linking
+ 	if (!logname)
+ 	{
+-		struct passwd * pwent;
+-		pwent = getpwuid(getuid());
++		struct passwd *pwent = getpwuid(geteuid());
+ 		if (pwent)
+ 			logname = pwent->pw_name;
+ 	}
+@@ -364,7 +409,6 @@ rescan:
+ 	if (ret || GETFLAG(RESCAN_MASK))
+ 	{
+ #if USE_FORK
+-		SETFLAG(SCANNING_MASK);
+ 		sqlite3_close(db);
+ 		*scanner_pid = fork();
+ 		open_db(&db);
+@@ -381,6 +425,8 @@ rescan:
+ 		{
+ 			start_scanner();
+ 		}
++		else
++			SETFLAG(SCANNING_MASK);
+ #else
+ 		start_scanner();
+ #endif
+@@ -510,6 +556,8 @@ init(int argc, char **argv)
+ 	int ifaces = 0;
+ 	media_types types;
+ 	uid_t uid = 0;
++	gid_t gid = 0;
++	int error;
+ 
+ 	/* first check if "-f" option is used */
+ 	for (i=2; i<argc; i++)
+@@ -662,16 +710,15 @@ init(int argc, char **argv)
+ 			make_dir(path, S_ISVTX|S_IRWXU|S_IRWXG|S_IRWXO);
+ 			if (access(path, F_OK) != 0)
+ 				DPRINTF(E_FATAL, L_GENERAL, "Database path not accessible! [%s]\n", path);
+-			strncpyt(db_path, path, PATH_MAX);
++			strncpyt(db_path, path, sizeof(db_path));
+ 			break;
+ 		case UPNPLOGDIR:
+ 			path = realpath(ary_options[i].value, buf);
+ 			if (!path)
+-				path = (ary_options[i].value);
+-			make_dir(path, S_ISVTX|S_IRWXU|S_IRWXG|S_IRWXO);
+-			if (access(path, F_OK) != 0)
+-				DPRINTF(E_FATAL, L_GENERAL, "Log path not accessible! [%s]\n", path);
+-			strncpyt(log_path, path, PATH_MAX);
++				path = ary_options[i].value;
++			if (snprintf(log_path, sizeof(log_path), "%s", path) > sizeof(log_path))
++				DPRINTF(E_FATAL, L_GENERAL, "Log path too long! [%s]\n", path);
++			make_dir(log_path, S_ISVTX|S_IRWXU|S_IRWXG|S_IRWXO);
+ 			break;
+ 		case UPNPLOGLEVEL:
+ 			log_level = ary_options[i].value;
+@@ -732,10 +779,17 @@ init(int argc, char **argv)
+ 					DPRINTF(E_FATAL, L_GENERAL, "Bad user '%s'.\n",
+ 						ary_options[i].value);
+ 				uid = entry->pw_uid;
++				if (!gid)
++					gid = entry->pw_gid;
+ 			}
+ 			break;
+ 		case FORCE_SORT_CRITERIA:
+ 			force_sort_criteria = ary_options[i].value;
++			if (force_sort_criteria[0] == '!')
++			{
++				SETFLAG(FORCE_ALPHASORT_MASK);
++				force_sort_criteria++;
++			}
+ 			break;
+ 		case MAX_CONNECTIONS:
+ 			runtime_vars.max_connections = atoi(ary_options[i].value);
+@@ -752,20 +806,19 @@ init(int argc, char **argv)
+ 			if (strcasecmp(ary_options[i].value, "beacon") == 0)
+ 				CLEARFLAG(TIVO_BONJOUR_MASK);
+ 			break;
++		case ENABLE_SUBTITLES:
++			if (!strtobool(ary_options[i].value))
++				CLEARFLAG(SUBTITLES_MASK);
++			break;
+ 		default:
+ 			DPRINTF(E_ERROR, L_GENERAL, "Unknown option in file %s\n",
+ 				optionsfile);
+ 		}
+ 	}
+-	if (log_path[0] == '\0')
+-	{
+-		if (db_path[0] == '\0')
+-			strncpyt(log_path, DEFAULT_LOG_PATH, PATH_MAX);
+-		else
+-			strncpyt(log_path, db_path, PATH_MAX);
+-	}
+-	if (db_path[0] == '\0')
+-		strncpyt(db_path, DEFAULT_DB_PATH, PATH_MAX);
++	if (!log_path[0])
++		strncpyt(log_path, DEFAULT_LOG_PATH, sizeof(log_path));
++	if (!db_path[0])
++		strncpyt(db_path, DEFAULT_DB_PATH, sizeof(db_path));
+ 
+ 	/* command line arguments processing */
+ 	for (i=1; i<argc; i++)
+@@ -857,7 +910,7 @@ init(int argc, char **argv)
+ 		case 'R':
+ 			snprintf(buf, sizeof(buf), "rm -rf %s/files.db %s/art_cache", db_path, db_path);
+ 			if (system(buf) != 0)
+-				DPRINTF(E_FATAL, L_GENERAL, "Failed to clean old file cache. EXITING\n");
++				DPRINTF(E_FATAL, L_GENERAL, "Failed to clean old file cache %s. EXITING\n", db_path);
+ 			break;
+ 		case 'u':
+ 			if (i+1 != argc)
+@@ -871,11 +924,29 @@ init(int argc, char **argv)
+ 					if (!entry)
+ 						DPRINTF(E_FATAL, L_GENERAL, "Bad user '%s'.\n", argv[i]);
+ 					uid = entry->pw_uid;
++					if (!gid)
++						gid = entry->pw_gid;
+ 				}
+ 			}
+ 			else
+ 				DPRINTF(E_FATAL, L_GENERAL, "Option -%c takes one argument.\n", argv[i][1]);
+ 			break;
++		case 'g':
++			if (i+1 != argc)
++			{
++				i++;
++				gid = strtoul(argv[i], &string, 0);
++				if (*string)
++				{
++					/* Symbolic group given, not GID. */
++					struct group *grp = getgrnam(argv[i]);
++					if (!grp)
++						DPRINTF(E_FATAL, L_GENERAL, "Bad group '%s'.\n", argv[i]);
++					gid = grp->gr_gid;
++				}
++			}
++			else
++				DPRINTF(E_FATAL, L_GENERAL, "Option -%c takes one argument.\n", argv[i][1]);
+ 			break;
+ #ifdef __linux__
+ 		case 'S':
+@@ -896,7 +967,7 @@ init(int argc, char **argv)
+ 	{
+ 		printf("Usage:\n\t"
+ 			"%s [-d] [-v] [-f config_file] [-p port]\n"
+-			"\t\t[-i network_interface] [-u uid_to_run_as]\n"
++			"\t\t[-i network_interface] [-u uid_to_run_as] [-g group_to_run_as]\n"
+ 			"\t\t[-t notify_interval] [-P pid_filename]\n"
+ 			"\t\t[-s serial] [-m model_number]\n"
+ #ifdef __linux__
+@@ -929,38 +1000,31 @@ init(int argc, char **argv)
+ 	else if (!log_level)
+ 		log_level = log_str;
+ 
+-	/* Set the default log file path to NULL (stdout) */
+-	path = NULL;
++	/* Set the default log to stdout */
+ 	if (debug_flag)
+ 	{
+ 		pid = getpid();
+ 		strcpy(log_str+65, "maxdebug");
+ 		log_level = log_str;
++		log_path[0] = '\0';
+ 	}
+ 	else if (GETFLAG(SYSTEMD_MASK))
+ 	{
+ 		pid = getpid();
++		log_path[0] = '\0';
+ 	}
+ 	else
+ 	{
+ 		pid = process_daemonize();
+-		#ifdef READYNAS
+-		unlink("/ramfs/.upnp-av_scan");
+-		path = "/var/log/upnp-av.log";
+-		#else
+ 		if (access(db_path, F_OK) != 0)
+ 			make_dir(db_path, S_ISVTX|S_IRWXU|S_IRWXG|S_IRWXO);
+-		snprintf(buf, sizeof(buf), "%s/minidlna.log", log_path);
+-		path = buf;
+-		#endif
+ 	}
+-	log_init(path, log_level);
++	if (log_init(log_level) < 0)
++		DPRINTF(E_FATAL, L_GENERAL, "Failed to open log file '%s/" LOGFILE_NAME "': %s\n",
++			log_path, strerror(errno));
+ 
+ 	if (process_check_if_running(pidfilename) < 0)
+-	{
+-		DPRINTF(E_ERROR, L_GENERAL, SERVER_NAME " is already running. EXITING.\n");
+-		return 1;
+-	}	
++		DPRINTF(E_FATAL, L_GENERAL, SERVER_NAME " is already running. EXITING.\n");
+ 
+ 	set_startup_time();
+ 
+@@ -981,6 +1045,8 @@ init(int argc, char **argv)
+ 		DPRINTF(E_FATAL, L_GENERAL, "Failed to set %s handler. EXITING.\n", "SIGPIPE");
+ 	if (signal(SIGHUP, &sighup) == SIG_ERR)
+ 		DPRINTF(E_FATAL, L_GENERAL, "Failed to set %s handler. EXITING.\n", "SIGHUP");
++	if (signal(SIGUSR2, SIG_IGN) == SIG_ERR)
++		DPRINTF(E_FATAL, L_GENERAL, "Failed to set %s handler. EXITING.\n", "SIGUSR2");
+ 	signal(SIGUSR1, &sigusr1);
+ 	sa.sa_handler = process_handle_child_termination;
+ 	if (sigaction(SIGCHLD, &sa, NULL))
+@@ -997,6 +1063,10 @@ init(int argc, char **argv)
+ 				db_path, uid, strerror(errno));
+ 	}
+ 
++	if (gid > 0 && setgid(gid) == -1)
++		DPRINTF(E_FATAL, L_GENERAL, "Failed to switch to gid '%d'. [%s] EXITING.\n",
++			gid, strerror(errno));
++
+ 	if (uid > 0 && setuid(uid) == -1)
+ 		DPRINTF(E_FATAL, L_GENERAL, "Failed to switch to uid '%d'. [%s] EXITING.\n",
+ 			uid, strerror(errno));
+@@ -1008,6 +1078,10 @@ init(int argc, char **argv)
+ 		return 1;
+ 	}
+ 
++	if ((error = event_module.init()) != 0)
++		DPRINTF(E_FATAL, L_GENERAL, "Failed to init event module. "
++		    "[%s] EXITING.\n", strerror(error));
++
+ 	return 0;
+ }
+ 
+@@ -1019,22 +1093,21 @@ main(int argc, char **argv)
+ 	int ret, i;
+ 	int shttpl = -1;
+ 	int smonitor = -1;
+-	LIST_HEAD(httplisthead, upnphttp) upnphttphead;
+ 	struct upnphttp * e = 0;
+ 	struct upnphttp * next;
+-	fd_set readset;	/* for select() */
+-	fd_set writeset;
+-	struct timeval timeout, timeofday, lastnotifytime = {0, 0};
++	struct timeval tv, timeofday, lastnotifytime = {0, 0};
+ 	time_t lastupdatetime = 0, lastdbtime = 0;
+-	int max_fd = -1;
++	u_long timeout;	/* in milliseconds */
+ 	int last_changecnt = 0;
+ 	pid_t scanner_pid = 0;
+ 	pthread_t inotify_thread = 0;
++	struct event ssdpev, httpev, monev;
+ #ifdef TIVO_SUPPORT
+ 	uint8_t beacon_interval = 5;
+ 	int sbeacon = -1;
+ 	struct sockaddr_in tivo_bcast;
+ 	struct timeval lastbeacontime = {0, 0};
++	struct event beaconev;
+ #endif
+ 
+ 	for (i = 0; i < L_MAX; i++)
+@@ -1071,8 +1144,21 @@ main(int argc, char **argv)
+ 		else if (pthread_create(&inotify_thread, NULL, start_inotify, NULL) != 0)
+ 			DPRINTF(E_FATAL, L_GENERAL, "ERROR: pthread_create() failed for start_inotify. EXITING\n");
+ 	}
+-#endif
++#endif /* HAVE_INOTIFY */
++
++#ifdef HAVE_KQUEUE
++	if (!GETFLAG(SCANNING_MASK)) {
++		av_register_all();
++		kqueue_monitor_start();
++	}
++#endif /* HAVE_KQUEUE */
++
+ 	smonitor = OpenAndConfMonitorSocket();
++	if (smonitor > 0)
++	{
++		monev = (struct event ){ .fd = smonitor, .rdwr = EVENT_READ, .process = ProcessMonitorEvent };
++		event_module.add(&monev);
++	}
+ 
+ 	sssdp = OpenAndConfSSDPReceiveSocket();
+ 	if (sssdp < 0)
+@@ -1082,11 +1168,19 @@ main(int argc, char **argv)
+ 		if (SubmitServicesToMiniSSDPD(lan_addr[0].str, runtime_vars.port) < 0)
+ 			DPRINTF(E_FATAL, L_GENERAL, "Failed to connect to MiniSSDPd. EXITING");
+ 	}
++	else
++	{
++		ssdpev = (struct event ){ .fd = sssdp, .rdwr = EVENT_READ, .process = ProcessSSDPRequest };
++		event_module.add(&ssdpev);
++	}
++
+ 	/* open socket for HTTP connections. */
+ 	shttpl = OpenAndConfHTTPSocket(runtime_vars.port);
+ 	if (shttpl < 0)
+ 		DPRINTF(E_FATAL, L_GENERAL, "Failed to open socket for HTTP. EXITING\n");
+ 	DPRINTF(E_WARN, L_GENERAL, "HTTP listening on port %d\n", runtime_vars.port);
++	httpev = (struct event ){ .fd = shttpl, .rdwr = EVENT_READ, .process = ProcessListen };
++	event_module.add(&httpev);
+ 
+ #ifdef TIVO_SUPPORT
+ 	if (GETFLAG(TIVO_MASK))
+@@ -1107,6 +1201,8 @@ main(int argc, char **argv)
+ 			if(sbeacon < 0)
+ 				DPRINTF(E_FATAL, L_GENERAL, "Failed to open sockets for sending Tivo beacon notify "
+ 					"messages. EXITING\n");
++			beaconev = (struct event ){ .fd = sbeacon, .rdwr = EVENT_READ, .process = ProcessTiVoBeacon };
++			event_module.add(&beaconev);
+ 			tivo_bcast.sin_family = AF_INET;
+ 			tivo_bcast.sin_addr.s_addr = htonl(getBcastAddress());
+ 			tivo_bcast.sin_port = htons(2190);
+@@ -1120,144 +1216,79 @@ main(int argc, char **argv)
+ 	/* main loop */
+ 	while (!quitting)
+ 	{
++		if (gettimeofday(&timeofday, 0) < 0)
++			DPRINTF(E_FATAL, L_GENERAL, "gettimeofday(): %s\n", strerror(errno));
+ 		/* Check if we need to send SSDP NOTIFY messages and do it if
+ 		 * needed */
+-		if (gettimeofday(&timeofday, 0) < 0)
++		tv = lastnotifytime;
++		tv.tv_sec += runtime_vars.notify_interval;
++		if (timevalcmp(&timeofday, &tv, >=))
+ 		{
+-			DPRINTF(E_ERROR, L_GENERAL, "gettimeofday(): %s\n", strerror(errno));
+-			timeout.tv_sec = runtime_vars.notify_interval;
+-			timeout.tv_usec = 0;
++			DPRINTF(E_DEBUG, L_SSDP, "Sending SSDP notifies\n");
++			for (i = 0; i < n_lan_addr; i++)
++			{
++				SendSSDPNotifies(lan_addr[i].snotify, lan_addr[i].str,
++					runtime_vars.port, runtime_vars.notify_interval);
++			}
++			lastnotifytime = timeofday;
++			timeout = runtime_vars.notify_interval * 1000;
+ 		}
+ 		else
+ 		{
+-			/* the comparison is not very precise but who cares ? */
+-			if (timeofday.tv_sec >= (lastnotifytime.tv_sec + runtime_vars.notify_interval))
++			timevalsub(&tv, &timeofday);
++			timeout = tv.tv_sec * 1000 + tv.tv_usec / 1000;
++		}
++#ifdef TIVO_SUPPORT
++		if (sbeacon >= 0)
++		{
++			u_long beacontimeout;
++
++			tv = lastbeacontime;
++			tv.tv_sec += beacon_interval;
++			if (timevalcmp(&timeofday, &tv, >=))
+ 			{
+-				DPRINTF(E_DEBUG, L_SSDP, "Sending SSDP notifies\n");
+-				for (i = 0; i < n_lan_addr; i++)
+-				{
+-					SendSSDPNotifies(lan_addr[i].snotify, lan_addr[i].str,
+-						runtime_vars.port, runtime_vars.notify_interval);
+-				}
+-				memcpy(&lastnotifytime, &timeofday, sizeof(struct timeval));
+-				timeout.tv_sec = runtime_vars.notify_interval;
+-				timeout.tv_usec = 0;
++				sendBeaconMessage(sbeacon, &tivo_bcast, sizeof(struct sockaddr_in), 1);
++				lastbeacontime = timeofday;
++				beacontimeout = beacon_interval * 1000;
++				if (timeout > beacon_interval * 1000)
++					timeout = beacon_interval * 1000;
++				/* Beacons should be sent every 5 seconds or
++				 * so for the first minute, then every minute
++				 * or so thereafter. */
++				if (beacon_interval == 5 && (timeofday.tv_sec - startup_time) > 60)
++					beacon_interval = 60;
+ 			}
+ 			else
+ 			{
+-				timeout.tv_sec = lastnotifytime.tv_sec + runtime_vars.notify_interval
+-				                 - timeofday.tv_sec;
+-				if (timeofday.tv_usec > lastnotifytime.tv_usec)
+-				{
+-					timeout.tv_usec = 1000000 + lastnotifytime.tv_usec
+-					                  - timeofday.tv_usec;
+-					timeout.tv_sec--;
+-				}
+-				else
+-					timeout.tv_usec = lastnotifytime.tv_usec - timeofday.tv_usec;
++				timevalsub(&tv, &timeofday);
++				beacontimeout = tv.tv_sec * 1000 +
++				    tv.tv_usec / 1000;
+ 			}
+-#ifdef TIVO_SUPPORT
+-			if (sbeacon >= 0)
+-			{
+-				if (timeofday.tv_sec >= (lastbeacontime.tv_sec + beacon_interval))
+-				{
+-					sendBeaconMessage(sbeacon, &tivo_bcast, sizeof(struct sockaddr_in), 1);
+-					memcpy(&lastbeacontime, &timeofday, sizeof(struct timeval));
+-					if (timeout.tv_sec > beacon_interval)
+-					{
+-						timeout.tv_sec = beacon_interval;
+-						timeout.tv_usec = 0;
+-					}
+-					/* Beacons should be sent every 5 seconds or so for the first minute,
+-					 * then every minute or so thereafter. */
+-					if (beacon_interval == 5 && (timeofday.tv_sec - startup_time) > 60)
+-						beacon_interval = 60;
+-				}
+-				else if (timeout.tv_sec > (lastbeacontime.tv_sec + beacon_interval + 1 - timeofday.tv_sec))
+-					timeout.tv_sec = lastbeacontime.tv_sec + beacon_interval - timeofday.tv_sec;
+-			}
+-#endif
++			if (timeout > beacontimeout)
++				timeout = beacontimeout;
+ 		}
++#endif
+ 
+-		if (GETFLAG(SCANNING_MASK))
+-		{
+-			if (!scanner_pid || kill(scanner_pid, 0) != 0)
+-			{
+-				CLEARFLAG(SCANNING_MASK);
+-				if (_get_dbtime() != lastdbtime)
+-					updateID++;
+-			}
++		if (GETFLAG(SCANNING_MASK) && kill(scanner_pid, 0) != 0) {
++			CLEARFLAG(SCANNING_MASK);
++			if (_get_dbtime() != lastdbtime)
++				updateID++;
++#ifdef HAVE_KQUEUE
++			av_register_all();
++			kqueue_monitor_start();
++#endif /* HAVE_KQUEUE */
+ 		}
+ 
+-		/* select open sockets (SSDP, HTTP listen, and all HTTP soap sockets) */
+-		FD_ZERO(&readset);
++		event_module.process(timeout);
++		if (quitting)
++			goto shutdown;
+ 
+-		if (sssdp >= 0) 
+-		{
+-			FD_SET(sssdp, &readset);
+-			max_fd = MAX(max_fd, sssdp);
+-		}
+-		
+-		if (shttpl >= 0) 
+-		{
+-			FD_SET(shttpl, &readset);
+-			max_fd = MAX(max_fd, shttpl);
+-		}
+-#ifdef TIVO_SUPPORT
+-		if (sbeacon >= 0) 
+-		{
+-			FD_SET(sbeacon, &readset);
+-			max_fd = MAX(max_fd, sbeacon);
+-		}
+-#endif
+-		if (smonitor >= 0) 
+-		{
+-			FD_SET(smonitor, &readset);
+-			max_fd = MAX(max_fd, smonitor);
+-		}
++		upnpevents_gc();
+ 
+-		i = 0;	/* active HTTP connections count */
+-		for (e = upnphttphead.lh_first; e != NULL; e = e->entries.le_next)
+-		{
+-			if ((e->socket >= 0) && (e->state <= 2))
+-			{
+-				FD_SET(e->socket, &readset);
+-				max_fd = MAX(max_fd, e->socket);
+-				i++;
+-			}
+-		}
+-		FD_ZERO(&writeset);
+-		upnpevents_selectfds(&readset, &writeset, &max_fd);
+-
+-		ret = select(max_fd+1, &readset, &writeset, 0, &timeout);
+-		if (ret < 0)
+-		{
+-			if(quitting) goto shutdown;
+-			if(errno == EINTR) continue;
+-			DPRINTF(E_ERROR, L_GENERAL, "select(all): %s\n", strerror(errno));
+-			DPRINTF(E_FATAL, L_GENERAL, "Failed to select open sockets. EXITING\n");
+-		}
+-		upnpevents_processfds(&readset, &writeset);
+-		/* process SSDP packets */
+-		if (sssdp >= 0 && FD_ISSET(sssdp, &readset))
+-		{
+-			/*DPRINTF(E_DEBUG, L_GENERAL, "Received SSDP Packet\n");*/
+-			ProcessSSDPRequest(sssdp, (unsigned short)runtime_vars.port);
+-		}
+-#ifdef TIVO_SUPPORT
+-		if (sbeacon >= 0 && FD_ISSET(sbeacon, &readset))
+-		{
+-			/*DPRINTF(E_DEBUG, L_GENERAL, "Received UDP Packet\n");*/
+-			ProcessTiVoBeacon(sbeacon);
+-		}
+-#endif
+-		if (smonitor >= 0 && FD_ISSET(smonitor, &readset))
+-		{
+-			ProcessMonitorEvent(smonitor);
+-		}
+ 		/* increment SystemUpdateID if the content database has changed,
+ 		 * and if there is an active HTTP connection, at most once every 2 seconds */
+-		if (i && (timeofday.tv_sec >= (lastupdatetime + 2)))
++		if (!LIST_EMPTY(&upnphttphead) &&
++		    (timeofday.tv_sec >= (lastupdatetime + 2)))
+ 		{
+ 			if (GETFLAG(SCANNING_MASK))
+ 			{
+@@ -1276,48 +1307,6 @@ main(int argc, char **argv)
+ 				lastupdatetime = timeofday.tv_sec;
+ 			}
+ 		}
+-		/* process active HTTP connections */
+-		for (e = upnphttphead.lh_first; e != NULL; e = e->entries.le_next)
+-		{
+-			if ((e->socket >= 0) && (e->state <= 2) && (FD_ISSET(e->socket, &readset)))
+-				Process_upnphttp(e);
+-		}
+-		/* process incoming HTTP connections */
+-		if (shttpl >= 0 && FD_ISSET(shttpl, &readset))
+-		{
+-			int shttp;
+-			socklen_t clientnamelen;
+-			struct sockaddr_in clientname;
+-			clientnamelen = sizeof(struct sockaddr_in);
+-			shttp = accept(shttpl, (struct sockaddr *)&clientname, &clientnamelen);
+-			if (shttp<0)
+-			{
+-				DPRINTF(E_ERROR, L_GENERAL, "accept(http): %s\n", strerror(errno));
+-			}
+-			else
+-			{
+-				struct upnphttp * tmp = 0;
+-				DPRINTF(E_DEBUG, L_GENERAL, "HTTP connection from %s:%d\n",
+-					inet_ntoa(clientname.sin_addr),
+-					ntohs(clientname.sin_port) );
+-				/*if (fcntl(shttp, F_SETFL, O_NONBLOCK) < 0) {
+-					DPRINTF(E_ERROR, L_GENERAL, "fcntl F_SETFL, O_NONBLOCK\n");
+-				}*/
+-				/* Create a new upnphttp object and add it to
+-				 * the active upnphttp object list */
+-				tmp = New_upnphttp(shttp);
+-				if (tmp)
+-				{
+-					tmp->clientaddr = clientname.sin_addr;
+-					LIST_INSERT_HEAD(&upnphttphead, tmp, entries);
+-				}
+-				else
+-				{
+-					DPRINTF(E_ERROR, L_GENERAL, "New_upnphttp() failed\n");
+-					close(shttp);
+-				}
+-			}
+-		}
+ 		/* delete finished HTTP connections */
+ 		for (e = upnphttphead.lh_first; e != NULL; e = next)
+ 		{
+@@ -1369,6 +1358,8 @@ shutdown:
+ 	process_reap_children();
+ 	free(children);
+ 
++	event_module.fini();
++
+ 	sql_exec(db, "UPDATE SETTINGS set VALUE = '%u' where KEY = 'UPDATE_ID'", updateID);
+ 	sqlite3_close(db);
+ 
+diff --git a/minidlna.conf b/minidlna.conf
+index 16cd15f..82db5f1 100644
+--- a/minidlna.conf
++++ b/minidlna.conf
+@@ -1,7 +1,7 @@
+ # port for HTTP (descriptions, SOAP, media transfer) traffic
+ port=8200
+ 
+-# network interfaces to serve, comma delimited
++# network interfaces to serve, comma delimited (8 interfaces max)
+ #network_interface=eth0
+ 
+ # specify the user account name or uid to run as
+@@ -80,6 +80,9 @@ model_number=1
+ #root_container=.
+ 
+ # always force SortCriteria to this value, regardless of the SortCriteria passed by the client
++# note: you can prepend the sort criteria with "!" to alter the titles of the objects so that they
++# will be alphanumerically sorted in the order you specify here, to work around clients that do their
++# own alphanumeric sorting.
+ #force_sort_criteria=+upnp:class,+upnp:originalTrackNumber,+dc:title
+ 
+ # maximum number of simultaneous connections
+@@ -88,3 +91,7 @@ model_number=1
+ 
+ # set this to yes to allow symlinks that point outside user-defined media_dirs.
+ #wide_links=no
++
++# enable subtitle support by default on unknown clients.
++# note: the default is yes
++#enable_subtitles=yes
+diff --git a/minidlna.conf.5 b/minidlna.conf.5
+index d02fd46..7f6b425 100644
+--- a/minidlna.conf.5
++++ b/minidlna.conf.5
+@@ -26,7 +26,7 @@ There should be no need to change this.
+ .fi
+ 
+ .IP "\fBnetwork_interface\fP"
+-Network interfaces to serve, comma delimited. Defaults to all.
++Network interfaces to serve, comma delimited. Maximum is 8 interfaces. Defaults to all.
+ 
+ .IP "\fBstrict_dlna\fP"
+ .nf
+@@ -106,7 +106,7 @@ EG: presentation_url=http://www.mediaserver.lan/index.php
+ .fi
+ 
+ .IP "\fBdb_dir\fP"
+-Where minidlna stores the data files, including Album caceh files, by default 
++Where minidlna stores the data files, including Album cache files, by default 
+ this is /var/cache/minidlna
+ 
+ .IP "\fBlog_dir\fP"
+@@ -161,6 +161,10 @@ The possible values are:
+ .IP "\fBforce_sort_criteria\fP"
+ Always force SortCriteria to this value, regardless of the SortCriteria passed by the client.
+ .nf
++You may prepend the sort criteria with "!" to alter the titles of the objects so that they
++will be alphanumerically sorted in the order you specify here, to work around clients that do
++their own alphanumeric sorting.
++.nf
+ 
+ Example
+ force_sort_criteria=+upnp:class,+upnp:originalTrackNumber,+dc:title
+@@ -171,10 +175,14 @@ force_sort_criteria=+upnp:class,+upnp:originalTrackNumber,+dc:title
+ Set to 'yes' to allow symlinks that point outside user-defined media_dirs.
+ By default, wide symlinks are not followed.
+ 
++.IP "\fBenable_subtitles\fP"
++Set to 'no' to disable subtitle support on unknown clients.
++By default, subtitles are enabled for unknown or generic clients.
++
+ 
+ 
+ .SH VERSION
+-This manpage corresponds to minidlna version 1.0.25 
++This manpage corresponds to minidlna version 1.3.0
+ 
+ .SH AUTHOR
+ .nf
+diff --git a/minidlnatypes.h b/minidlnatypes.h
+index 7cfad89..a92cc7d 100644
+--- a/minidlnatypes.h
++++ b/minidlnatypes.h
+@@ -34,7 +34,7 @@
+ #include <time.h>
+ #include <fcntl.h>
+ 
+-#define MAX_LAN_ADDR 4
++#define MAX_LAN_ADDR 8
+ /* structure for storing lan addresses
+  * with ascii representation and mask */
+ struct lan_addr_s {
+diff --git a/minissdp.c b/minissdp.c
+index 9147977..79f53c4 100644
+--- a/minissdp.c
++++ b/minissdp.c
+@@ -42,6 +42,7 @@
+ #include <arpa/inet.h>
+ #include <errno.h>
+ 
++#include "event.h"
+ #include "minidlnapath.h"
+ #include "upnphttp.h"
+ #include "upnpglobalvars.h"
+@@ -204,9 +205,10 @@ static const char * const known_service_types[] =
+ };
+ 
+ static void
+-_usleep(long usecs)
++_usleep(long min, long max)
+ {
+ 	struct timespec sleep_time;
++	long usecs = min + rand() / (RAND_MAX / (max - min + 1) + 1);
+ 
+ 	sleep_time.tv_sec = 0;
+ 	sleep_time.tv_nsec = usecs * 1000;
+@@ -278,7 +280,7 @@ SendSSDPNotifies(int s, const char *host, unsigned short port,
+ 	for (dup = 0; dup < 2; dup++)
+ 	{
+ 		if (dup)
+-			_usleep(200000);
++			_usleep(150000, 250000);
+ 		i = 0;
+ 		while (known_service_types[i])
+ 		{
+@@ -481,8 +483,9 @@ close:
+ /* ProcessSSDPRequest()
+  * process SSDP M-SEARCH requests and responds to them */
+ void
+-ProcessSSDPRequest(int s, unsigned short port)
++ProcessSSDPRequest(struct event *ev)
+ {
++	int s = ev->fd;
+ 	int n;
+ 	char bufr[1500];
+ 	struct sockaddr_in sendername;
+@@ -668,6 +671,11 @@ ProcessSSDPRequest(int s, unsigned short port)
+ 				pi = (struct in_pktinfo *)CMSG_DATA(cmsg);
+ 				addr = pi->ipi_spec_dst;
+ 				inet_ntop(AF_INET, &addr, host, sizeof(host));
++				for (i = 0; i < n_lan_addr; i++)
++				{
++					if (pi->ipi_ifindex == lan_addr[i].ifindex)
++						break;
++				}
+ 			}
+ #else
+ 			const char *host;
+@@ -682,14 +690,14 @@ ProcessSSDPRequest(int s, unsigned short port)
+ 					break;
+ 				}
+ 			}
++			host = lan_addr[iface].str;
++#endif
+ 			if (n_lan_addr == i)
+ 			{
+ 				DPRINTF(E_DEBUG, L_SSDP, "Ignoring SSDP M-SEARCH on other interface [%s]\n",
+ 					inet_ntoa(sendername.sin_addr));
+ 				return;
+ 			}
+-			host = lan_addr[iface].str;
+-#endif
+ 			DPRINTF(E_DEBUG, L_SSDP, "SSDP M-SEARCH from %s:%d ST: %.*s, MX: %.*s, MAN: %.*s\n",
+ 				inet_ntoa(sendername.sin_addr),
+ 				ntohs(sendername.sin_port),
+@@ -722,20 +730,22 @@ ProcessSSDPRequest(int s, unsigned short port)
+ 					if (l != st_len)
+ 						break;
+ 				}
+-				_usleep(random()>>20);
+-				SendSSDPResponse(s, sendername, i,
+-						 host, port, len_r);
++				_usleep(13000, 20000);
++				SendSSDPResponse(s, sendername, i, host,
++				    (unsigned short)runtime_vars.port, len_r);
+ 				return;
+ 			}
+ 			/* Responds to request with ST: ssdp:all */
+ 			/* strlen("ssdp:all") == 8 */
+ 			if ((st_len == 8) && (memcmp(st, "ssdp:all", 8) == 0))
+ 			{
++				_usleep(13000, 30000);
+ 				for (i=0; known_service_types[i]; i++)
+ 				{
+ 					l = strlen(known_service_types[i]);
+-					SendSSDPResponse(s, sendername, i,
+-							 host, port, len_r);
++					SendSSDPResponse(s, sendername, i, host,
++					    (unsigned short)runtime_vars.port,
++					    len_r);
+ 				}
+ 			}
+ 		}
+diff --git a/minissdp.h b/minissdp.h
+index f6a5c16..8ac01fb 100644
+--- a/minissdp.h
++++ b/minissdp.h
+@@ -35,7 +35,7 @@ int OpenAndConfSSDPNotifySocket(struct lan_addr_s *iface);
+ 
+ void SendSSDPNotifies(int s, const char *host, unsigned short port, unsigned int lifetime);
+ 
+-void ProcessSSDPRequest(int s, unsigned short port);
++void ProcessSSDPRequest(struct event *ev);
+ 
+ int SendSSDPGoodbyes(int s);
+ 
+diff --git a/minixml.c b/minixml.c
+index 2fed4a1..bf3fc0f 100644
+--- a/minixml.c
++++ b/minixml.c
+@@ -143,7 +143,7 @@ void parseelt(struct xmlparser * p)
+ 						return;
+ 					while( IS_WHITE_SPACE(*p->xml) )
+ 					{
+-						p->xml++;
++						i++; p->xml++;
+ 						if (p->xml >= p->xmlend)
+ 							return;
+ 					}
+diff --git a/monitor.c b/monitor.c
+index b3a17f5..dcda631 100644
+--- a/monitor.c
++++ b/monitor.c
+@@ -19,6 +19,7 @@
+ 
+ #include <stdio.h>
+ #include <string.h>
++#include <stdbool.h>
+ #include <stdlib.h>
+ #include <errno.h>
+ #include <unistd.h>
+@@ -108,7 +109,7 @@ raise_watch_limit(unsigned int limit)
+ 	fclose(max_watches);
+ }
+ 
+-static int
++int
+ add_watch(int fd, const char * path)
+ {
+ 	struct watch *nw;
+@@ -123,14 +124,14 @@ add_watch(int fd, const char * path)
+ 	if( wd < 0 )
+ 	{
+ 		DPRINTF(E_ERROR, L_INOTIFY, "inotify_add_watch(%s) [%s]\n", path, strerror(errno));
+-		return -1;
++		return (errno);
+ 	}
+ 
+ 	nw = malloc(sizeof(struct watch));
+ 	if( nw == NULL )
+ 	{
+ 		DPRINTF(E_ERROR, L_INOTIFY, "malloc() error\n");
+-		return -1;
++		return (ENOMEM);
+ 	}
+ 	nw->wd = wd;
+ 	nw->next = NULL;
+@@ -147,7 +148,8 @@ add_watch(int fd, const char * path)
+ 	}
+ 	lastwatch = nw;
+ 
+-	return wd;
++	DPRINTF(E_INFO, L_INOTIFY, "Added watch to %s [%d]\n", path, wd);
++	return (0);
+ }
+ 
+ static int
+@@ -339,7 +341,7 @@ check_nfo(const char *path)
+ 				      " and MIME glob 'video/*' limit 1", file, file);
+ }
+ 
+-static int
++int
+ monitor_insert_file(const char *name, const char *path)
+ {
+ 	int len;
+@@ -470,6 +472,30 @@ monitor_insert_file(const char *name, const char *path)
+ 	return depth;
+ }
+ 
++static bool
++check_notsparse(const char *path)
++#if HAVE_DECL_SEEK_HOLE
++{
++	int fd;
++	bool rv;
++
++	if ((fd = open(path, O_RDONLY)) == -1)
++		return (false);
++	if (lseek(fd, 0, SEEK_HOLE) == lseek(fd, 0, SEEK_END))
++		rv = true;
++	else
++		rv = false;
++	close(fd);
++	return (rv);
++}
++#else
++{
++	struct stat st;
++
++	return (stat(path, &st) == 0 && (st.st_blocks << 9 >= st.st_size));
++}
++#endif
++
+ int
+ monitor_insert_directory(int fd, char *name, const char * path)
+ {
+@@ -479,7 +505,6 @@ monitor_insert_directory(int fd, char *name, const char * path)
+ 	char path_buf[PATH_MAX];
+ 	enum file_types type = TYPE_UNKNOWN;
+ 	media_types dir_types;
+-	struct stat st;
+ 
+ 	if( access(path, R_OK|X_OK) != 0 )
+ 	{
+@@ -504,20 +529,10 @@ monitor_insert_directory(int fd, char *name, const char * path)
+ 		free(parent_buf);
+ 	}
+ 
++#ifdef HAVE_WATCH
+ 	if( fd > 0 )
+-	{
+-		#ifdef HAVE_INOTIFY
+-		int wd = add_watch(fd, path);
+-		if( wd == -1 )
+-		{
+-			DPRINTF(E_ERROR, L_INOTIFY, "add_watch() failed\n");
+-		}
+-		else
+-		{
+-			DPRINTF(E_INFO, L_INOTIFY, "Added watch to %s [%d]\n", path, wd);
+-		}
+-		#endif
+-	}
++		add_watch(fd, path);
++#endif
+ 
+ 	dir_types = valid_media_types(path);
+ 
+@@ -527,7 +542,7 @@ monitor_insert_directory(int fd, char *name, const char * path)
+ 		DPRINTF(E_ERROR, L_INOTIFY, "opendir failed! [%s]\n", strerror(errno));
+ 		return -1;
+ 	}
+-	while( (e = readdir(ds)) )
++	while( !quitting && (e = readdir(ds)) )
+ 	{
+ 		if( e->d_name[0] == '.' )
+ 			continue;
+@@ -547,12 +562,8 @@ monitor_insert_directory(int fd, char *name, const char * path)
+ 		{
+ 			monitor_insert_directory(fd, esc_name, path_buf);
+ 		}
+-		else if( type == TYPE_FILE )
+-		{
+-			if( (stat(path_buf, &st) == 0) && (st.st_blocks<<9 >= st.st_size) )
+-			{
+-				monitor_insert_file(esc_name, path_buf);
+-			}
++		else if( type == TYPE_FILE && check_notsparse(path_buf)) {
++			monitor_insert_file(esc_name, path_buf);
+ 		}
+ 		free(esc_name);
+ 	}
+@@ -571,12 +582,12 @@ monitor_remove_directory(int fd, const char * path)
+ 
+ 	/* Invalidate the scanner cache so we don't insert files into non-existent containers */
+ 	valid_cache = 0;
++	#ifdef HAVE_INOTIFY
+ 	if( fd > 0 )
+ 	{
+-		#ifdef HAVE_INOTIFY
+ 		remove_watch(fd, path);
+-		#endif
+ 	}
++	#endif
+ 	sql = sqlite3_mprintf("SELECT ID from DETAILS where (PATH > '%q/' and PATH <= '%q/%c')"
+ 	                      " or PATH = '%q'", path, path, 0xFF, path);
+ 	if( (sql_get_table(db, sql, &result, &rows, NULL) == SQLITE_OK) )
+@@ -669,7 +680,7 @@ start_inotify(void)
+ 		}
+ 
+ 		i = 0;
+-		while( i < length )
++		while( !quitting && i < length )
+ 		{
+ 			struct inotify_event * event = (struct inotify_event *) &buffer[i];
+ 			if( event->len )
+diff --git a/monitor.h b/monitor.h
+index 35ab12e..c5e7b99 100644
+--- a/monitor.h
++++ b/monitor.h
+@@ -1,8 +1,18 @@
++int monitor_insert_file(const char *name, const char *path);
+ int monitor_insert_directory(int fd, char *name, const char * path);
+ int monitor_remove_file(const char * path);
+ int monitor_remove_directory(int fd, const char * path);
+ 
++#if defined(HAVE_INOTIFY) || defined(HAVE_KQUEUE)
++#define	HAVE_WATCH 1
++int	add_watch(int, const char *);
++#endif
++
+ #ifdef HAVE_INOTIFY
+ void *
+ start_inotify();
+ #endif
++
++#ifdef HAVE_KQUEUE
++void	kqueue_monitor_start();
++#endif
+diff --git a/monitor_kqueue.c b/monitor_kqueue.c
+new file mode 100644
+index 0000000..34026d5
+--- /dev/null
++++ b/monitor_kqueue.c
+@@ -0,0 +1,275 @@
++/*
++ * Copyright (c) 2017 Gleb Smirnoff <glebius@FreeBSD.org>
++ * Copyright (c) 2013 Bernard Spil <brnrd@FreeBSD.org>
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ */
++
++#include <sys/stat.h>
++#include <sys/event.h>
++#include <limits.h>
++#include <dirent.h>
++#include <errno.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <stdbool.h>
++#include <string.h>
++#include <unistd.h>
++
++#include "event.h"
++#include "log.h"
++#include "monitor.h"
++#include "minidlnatypes.h"
++#include "upnpglobalvars.h"
++#include "sql.h"
++#include "utils.h"
++
++struct watch {
++	struct event	ev;
++	const char	*path;
++	bool		isdir;
++};
++
++static void
++dir_vnode_process(struct event *ev, u_int fflags)
++{
++	struct watch *wt;
++	const char *path;
++	char *sql, **result, tmp_path[PATH_MAX], *esc_name;
++	int rows, result_path_len, i;
++	DIR* d;
++	struct dirent *entry;
++	bool found_flag;
++
++	wt = (struct watch *)ev->data;
++	path = wt->path;
++
++	if (fflags & NOTE_DELETE) {
++		DPRINTF(E_DEBUG, L_INOTIFY, "Path [%s] deleted.\n", path);
++		close(ev->fd);
++		free(wt);
++		monitor_remove_directory(0, path);
++		return;
++	} else if ((fflags & (NOTE_WRITE | NOTE_LINK)) ==
++	    (NOTE_WRITE | NOTE_LINK)) {
++
++		DPRINTF(E_DEBUG, L_INOTIFY, "Directory [%s] content updated\n",
++		    path);
++		sql = sqlite3_mprintf("SELECT PATH from DETAILS where "
++		    "(PATH > '%q/' and PATH <= '%q/%c') and SIZE IS NULL",
++		    path, path, 0xFF);
++		DPRINTF(E_DEBUG, L_INOTIFY, "SQL: %s\n", sql);
++		if ((sql_get_table(db, sql, &result, &rows, NULL) !=
++		    SQLITE_OK)) {
++			DPRINTF(E_WARN, L_INOTIFY,
++			    "Read state [%s]: Query failed\n", path);
++			goto err1;
++		}
++
++		for (i = 1; i <= rows; i++) {
++			DPRINTF(E_DEBUG, L_INOTIFY,
++			    "Indexed content: %s\n", result[i]);
++			if (access(result[i], R_OK) == -1)
++				monitor_remove_directory(0, result[i]);
++		}
++
++		if ((d = opendir(path)) == NULL) {
++			DPRINTF(E_ERROR, L_INOTIFY, "Can't list [%s] (%s)\n",
++			    path, strerror(errno));
++			goto err2;
++		}
++
++		for (entry = readdir(d); entry != NULL; entry = readdir(d)) {
++			if ((entry->d_type != DT_DIR) ||
++			    (strcmp(entry->d_name, "..") == 0) ||
++			    (strcmp(entry->d_name, ".") == 0))
++				continue;
++
++			result_path_len = snprintf(tmp_path, PATH_MAX,
++			    "%s/%s", path, entry->d_name);
++			if (result_path_len >= PATH_MAX) {
++				DPRINTF(E_ERROR, L_INOTIFY,
++				    "File path too long for %s!",
++				    entry->d_name);
++				continue;
++			}
++
++			DPRINTF(E_DEBUG, L_INOTIFY, "Walking %s\n", tmp_path);
++			found_flag = false;
++			for (i = 1; i <= rows; i++) {
++				if (strcmp(result[i], tmp_path) == 0) {
++					found_flag = true;
++					break;
++				}
++			}
++			if (!found_flag) {
++				esc_name = strdup(entry->d_name);
++				if (esc_name == NULL) {
++					DPRINTF(E_ERROR, L_INOTIFY,
++					    "strdup error");
++					continue;
++				}
++				esc_name = modifyString(esc_name, "&", "&amp;amp;", 0);
++				monitor_insert_directory(1, esc_name, tmp_path);
++				free(esc_name);
++			}
++		}
++	} else if (fflags & NOTE_WRITE) {
++
++		DPRINTF(E_DEBUG, L_INOTIFY, "File [%s] content updated\n",
++		    path);
++		sql = sqlite3_mprintf("SELECT PATH from DETAILS where "
++		    "(PATH > '%q/' and PATH <= '%q/%c') and SIZE IS NOT NULL",
++		    path, path, 0xFF);
++		if (sql_get_table(db, sql, &result, &rows, NULL) != SQLITE_OK) {
++			DPRINTF(E_WARN, L_INOTIFY,
++			    "Read state [%s]: Query failed\n", path);
++			goto err1;
++		}
++
++		for (i = 1; i <= rows; i++) {
++			DPRINTF(E_DEBUG, L_INOTIFY,
++			    "Indexed content: %s\n", result[i]);
++			if (access(result[i], R_OK) == -1)
++				monitor_remove_file(result[i]);
++		}
++
++		if ((d = opendir(path)) == NULL) {
++			DPRINTF(E_ERROR, L_INOTIFY,
++			    "Can't list [%s] (%s)\n", path, strerror(errno));
++			goto err2;
++		}
++
++		for (entry = readdir(d); entry != NULL; entry = readdir(d)) {
++			if ((entry->d_type != DT_REG) &&
++			    (entry->d_type != DT_LNK))
++				continue;
++
++			result_path_len = snprintf(tmp_path, PATH_MAX, "%s/%s",
++			    path, entry->d_name);
++			if (result_path_len >= PATH_MAX) {
++				DPRINTF(E_ERROR, L_INOTIFY,
++				    "File path too long for %s!",
++				    entry->d_name);
++				continue;
++			}
++			DPRINTF(E_DEBUG, L_INOTIFY, "Walking %s\n", tmp_path);
++			found_flag = false;
++			for (i = 1; i <= rows; i++)
++				if (strcmp(result[i], tmp_path) == 0) {
++					found_flag = true;
++					break;
++				}
++			if (!found_flag ) {
++				struct stat st;
++
++				if (stat(tmp_path, &st) != 0) {
++					DPRINTF(E_ERROR, L_INOTIFY,
++					    "stat(%s): %s\n", tmp_path,
++					    strerror(errno));
++					continue;
++				}
++				esc_name = strdup(entry->d_name);
++				if (esc_name == NULL) {
++					DPRINTF(E_ERROR, L_INOTIFY,
++					    "strdup error");
++					continue;
++				}
++				esc_name = modifyString(esc_name, "&", "&amp;amp;", 0);
++				if (S_ISDIR(st.st_mode))
++					monitor_insert_directory(1, esc_name, tmp_path);
++				else
++					monitor_insert_file(esc_name, tmp_path);
++				free(esc_name);
++			}
++		}
++	} else
++		return;
++
++	closedir(d);
++err2:
++	sqlite3_free_table(result);
++err1:
++	sqlite3_free(sql);
++}
++
++int
++add_watch(int fd __unused, const char *path)
++{
++	struct watch *wt;
++	struct event *ev;
++	int wd;
++
++	wd = open(path, O_RDONLY);
++	if (wd < 0) {
++		DPRINTF(E_ERROR, L_INOTIFY, "open(%s) [%s]\n",
++		    path, strerror(errno));
++		return (errno);
++	}
++
++	if ((wt = malloc(sizeof(struct watch))) == NULL) {
++		DPRINTF(E_ERROR, L_INOTIFY, "malloc() error\n");
++		close(wd);
++		return (ENOMEM);
++	}
++	if ((wt->path = strdup(path)) == NULL) {
++		DPRINTF(E_ERROR, L_INOTIFY, "strdup() error\n");
++		close(wd);
++		free(wt);
++		return (ENOMEM);
++	}
++	wt->isdir = true;
++	ev = &wt->ev;
++	ev->data = wt;
++	ev->fd = wd;
++	ev->rdwr = EVENT_VNODE;
++	ev->process_vnode = dir_vnode_process;
++
++	DPRINTF(E_DEBUG, L_INOTIFY, "kqueue add_watch [%s]\n", path);
++	event_module.add(ev);
++
++	return (0);
++}
++
++/*
++ * XXXGL: this function has too much copypaste of inotify_create_watches().
++ * We need to split out inotify stuff from monitor.c into monitor_inotify.c,
++ * compile the latter on Linux and this file on FreeBSD, and keep monitor.c
++ * itself platform independent.
++ */
++void
++kqueue_monitor_start()
++{
++	struct media_dir_s *media_path;
++	char **result;
++	int rows, i;
++
++	DPRINTF(E_DEBUG, L_INOTIFY, "kqueue monitoring starting\n");
++	for (media_path = media_dirs; media_path != NULL;
++	    media_path = media_path->next)
++		add_watch(0, media_path->path);
++	sql_get_table(db, "SELECT PATH from DETAILS where MIME is NULL and PATH is not NULL", &result, &rows, NULL);
++	for (i = 1; i <= rows; i++ )
++		add_watch(0, result[i]);
++	sqlite3_free_table(result);
++}
+diff --git a/options.c b/options.c
+index 79e4ffe..cee3dff 100644
+--- a/options.c
++++ b/options.c
+@@ -67,6 +67,7 @@ static const struct {
+ 	{ MERGE_MEDIA_DIRS, "merge_media_dirs" },
+ 	{ WIDE_LINKS, "wide_links" },
+ 	{ TIVO_DISCOVERY, "tivo_discovery" },
++	{ ENABLE_SUBTITLES, "enable_subtitles" },
+ };
+ 
+ int
+diff --git a/options.h b/options.h
+index cb4c3be..1ff5b22 100644
+--- a/options.h
++++ b/options.h
+@@ -60,6 +60,7 @@ enum upnpconfigoptions {
+ 	MERGE_MEDIA_DIRS,		/* don't add an extra directory level when there are multiple media dirs */
+ 	WIDE_LINKS,			/* allow following symlinks outside the defined media_dirs */
+ 	TIVO_DISCOVERY,			/* TiVo discovery protocol: bonjour or beacon. Defaults to bonjour if supported */
++	ENABLE_SUBTITLES,		/* Enable generic subtitle support for all clients by default */
+ };
+ 
+ /* readoptionsfile()
+diff --git a/process.c b/process.c
+index ecb4922..abb777b 100644
+--- a/process.c
++++ b/process.c
+@@ -38,9 +38,10 @@
+ #include <signal.h>
+ #include <sys/wait.h>
+ 
++#include "config.h"
++#include "event.h"
+ #include "upnpglobalvars.h"
+ #include "process.h"
+-#include "config.h"
+ #include "log.h"
+ 
+ struct child *children = NULL;
+@@ -100,7 +101,10 @@ process_fork(struct client_cache_s *client)
+ 			client->connections++;
+ 		add_process_info(pid, client);
+ 		number_of_children++;
+-	}
++	} else if (pid == 0)
++		event_module.fini();
++	else
++		DPRINTF(E_FATAL, L_GENERAL, "Fork() failed: %s\n", strerror(errno));
+ 
+ 	return pid;
+ }
+diff --git a/select.c b/select.c
+new file mode 100644
+index 0000000..dce7311
+--- /dev/null
++++ b/select.c
+@@ -0,0 +1,192 @@
++/*
++ * Copyright (c) 2017 Gleb Smirnoff <glebius@FreeBSD.org>
++ * Copyright (c) 2002-2017 Igor Sysoev
++ * Copyright (c) 2011-2017 Nginx, Inc.
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ */
++
++#include <sys/types.h>
++#include <sys/select.h>
++#include <stdlib.h>
++#include <assert.h>
++#include <errno.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "event.h"
++#include "log.h"
++
++static event_module_init_t select_init;
++static event_module_fini_t select_fini;
++static event_module_add_t select_add;
++static event_module_del_t select_del;
++static event_module_process_t select_process;
++
++static fd_set master_read_fd_set;
++static fd_set master_write_fd_set;
++static fd_set work_read_fd_set;
++static fd_set work_write_fd_set;
++
++static struct event **events;
++static int nevents;
++static int max_fd;
++
++struct event_module event_module = {
++	.add =		select_add,
++	.del =		select_del,
++	.process =	select_process,
++	.init = 	select_init,
++	.fini =		select_fini,
++};
++
++static int
++select_init(void)
++{
++
++	events = calloc(FD_SETSIZE, sizeof(struct event *));
++	if (events == NULL)
++		return (ENOMEM);
++
++	FD_ZERO(&master_read_fd_set);
++	FD_ZERO(&master_write_fd_set);
++	max_fd = 0;
++	nevents = 0;
++
++	return (0);
++}
++
++
++static void
++select_fini(void)
++{
++
++	free(events);
++	events = NULL;
++}
++
++static int
++select_add(struct event *ev)
++{
++
++	assert(ev->fd < FD_SETSIZE);
++
++	switch (ev->rdwr) {
++	case EVENT_READ:
++		FD_SET(ev->fd, &master_read_fd_set);
++		break;
++	case EVENT_WRITE:
++		FD_SET(ev->fd, &master_write_fd_set);
++		break;
++	}
++
++	if (max_fd != -1 && max_fd < ev->fd)
++		max_fd = ev->fd;
++
++	events[nevents] = ev;
++	ev->index = nevents++;
++
++	assert(nevents < FD_SETSIZE);
++
++	return (0);
++}
++
++static int
++select_del(struct event *ev, int flags)
++{
++
++	assert(ev->fd < FD_SETSIZE);
++
++	switch (ev->rdwr) {
++	case EVENT_READ:
++		FD_CLR(ev->fd, &master_read_fd_set);
++		break;
++	case EVENT_WRITE:
++		FD_CLR(ev->fd, &master_write_fd_set);
++		break;
++	}
++
++	if (max_fd == ev->fd)
++		max_fd = -1;
++
++	if (ev->index < --nevents) {
++		struct event *ev0;
++
++		ev0 = events[nevents];
++		events[ev->index] = ev0;
++		ev0->index = ev->index;
++	}
++	ev->index = -1;
++
++	return (0);
++}
++
++static int
++select_process(u_long msec)
++{
++	struct timeval tv, *tp;
++	struct event *ev;
++	int ready, i;
++
++	/* Need to rescan for max_fd. */
++	if (max_fd == -1)
++		for (i = 0; i < nevents; i++) {
++			if (max_fd < events[i]->fd)
++				max_fd = events[i]->fd;
++		}
++
++	tv.tv_sec = (long) (msec / 1000);
++	tv.tv_usec = (long) ((msec % 1000) * 1000);
++	tp = &tv;
++
++	work_read_fd_set = master_read_fd_set;
++	work_write_fd_set = master_write_fd_set;
++
++	ready = select(max_fd + 1, &work_read_fd_set, &work_write_fd_set, NULL, tp);
++
++	if (ready == -1) {
++		if (errno == EINTR)
++			return (errno);
++		DPRINTF(E_FATAL, L_GENERAL, "select(): %s. EXITING\n", strerror(errno));
++	}
++
++	if (ready == 0)
++		return (0);
++
++	for (i = 0; i < nevents; i++) {
++		ev = events[i];
++
++		switch (ev->rdwr) {
++		case EVENT_READ:
++			if (FD_ISSET(ev->fd, &work_read_fd_set))
++				ev->process(ev);
++			break;
++		case EVENT_WRITE:
++			if (FD_ISSET(ev->fd, &work_write_fd_set))
++				ev->process(ev);
++			break;
++		}
++	}
++
++	return (0);
++}
+diff --git a/sendfile.h b/sendfile.h
+index b4d1951..1ea50c5 100644
+--- a/sendfile.h
++++ b/sendfile.h
+@@ -51,7 +51,7 @@ int sys_sendfile(int sock, int sendfd, off_t *offset, off_t len)
+ 	int ret;
+ 	size_t nbytes = len;
+ 
+-	ret = sendfile(sendfd, sock, *offset, nbytes, NULL, &len, SF_MNOWAIT);
++	ret = sendfile(sendfd, sock, *offset, nbytes, NULL, &len, 0);
+ 	*offset += len;
+ 
+ 	return ret;
+diff --git a/tagutils/tagutils-dff.c b/tagutils/tagutils-dff.c
+new file mode 100644
+index 0000000..05a3b42
+--- /dev/null
++++ b/tagutils/tagutils-dff.c
+@@ -0,0 +1,399 @@
++//=========================================================================
++// FILENAME     : tagutils-dff.c
++// DESCRIPTION  : DFF metadata reader
++//=========================================================================
++// Copyright (c) 2014 Takeshich NAKAMURA
++//=========================================================================
++
++/*
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++#define GET_DFF_INT64(p) ((((uint64_t)((p)[0])) << 56) |   \
++			  (((uint64_t)((p)[1])) << 48) |   \
++			  (((uint64_t)((p)[2])) << 40) |   \
++			  (((uint64_t)((p)[3])) << 32) |   \
++			  (((uint64_t)((p)[4])) << 24) |   \
++			  (((uint64_t)((p)[5])) << 16) |   \
++			  (((uint64_t)((p)[6])) << 8) |    \
++			  (((uint64_t)((p)[7]))))
++
++#define GET_DFF_INT32(p) ((((uint32_t)((p)[0])) << 24) |   \
++			  (((uint32_t)((p)[1])) << 16) |   \
++			  (((uint32_t)((p)[2])) << 8) |     \
++			  (((uint32_t)((p)[3]))))
++
++#define GET_DFF_INT16(p) ((((uint16_t)((p)[0])) << 8) |   \
++			  (((uint16_t)((p)[1]))))
++
++static int
++_get_dfffileinfo(char *file, struct song_metadata *psong)
++{
++	FILE *fp;
++	uint32_t len;
++	uint32_t rt;
++	unsigned char hdr[32] = { 0 };
++
++	uint64_t totalsize = 0;
++	uint64_t propckDataSize = 0;
++	uint64_t count = 0;
++	uint32_t samplerate = 0;
++	uint16_t channels = 0;
++	//DST
++	uint64_t dstickDataSize = 0;
++	uint32_t numFrames = 0;
++	uint16_t frameRate = 0;
++	unsigned char frteckData[18] = { 0 };
++	unsigned char dstickData[12] = { 0 };
++	uint64_t totalcount = 0;
++	unsigned char ckbuf[12] = { 0 };
++	unsigned char compressionType[4] = { 0 };
++	unsigned char dsdsdckData[12] = { 0 };
++	uint64_t dsdsdckDataSize = 0;
++	uint64_t cmprckDataSize = 0;
++	uint64_t abssckDataSize = 0;
++	uint64_t lscockDataSize = 0;
++	uint64_t comtckDataSize = 0;
++	uint64_t diinckDataSize = 0;
++	uint64_t diarckDataSize = 0;
++	uint64_t ditickDataSize = 0;
++	uint64_t manfckDataSize = 0;
++
++	//DPRINTF(E_DEBUG,L_SCANNER,"Getting DFF fileinfo =%s\n",file);
++
++	if ((fp = fopen(file, "rb")) == NULL)
++	{
++		DPRINTF(E_WARN, L_SCANNER, "Could not create file handle\n");
++		return -1;
++	}
++
++	len = 32;
++	//Form DSD chunk
++	if (!(rt = fread(hdr, len, 1, fp)))
++	{
++		DPRINTF(E_WARN, L_SCANNER, "Could not read Form DSD chunk from %s\n", file);
++		fclose(fp);
++		return -1;
++	}
++
++	if (strncmp((char*)hdr, "FRM8", 4))
++	{
++		DPRINTF(E_WARN, L_SCANNER, "Invalid Form DSD chunk in %s\n", file);
++		fclose(fp);
++		return -1;
++	}
++
++	totalsize = GET_DFF_INT64(hdr + 4);
++
++	if (strncmp((char*)hdr + 12, "DSD ", 4))
++	{
++		DPRINTF(E_WARN, L_SCANNER, "Invalid Form DSD chunk in %s\n", file);
++		fclose(fp);
++		return -1;
++	}
++
++	//FVER chunk
++	if (strncmp((char*)hdr + 16, "FVER", 4))
++	{
++		DPRINTF(E_WARN, L_SCANNER, "Invalid Format Version Chunk in %s\n", file);
++		fclose(fp);
++		return -1;
++	}
++
++	totalsize -= 16;
++	while (totalcount < totalsize - 4)
++	{
++		if (!(rt = fread(ckbuf, sizeof(ckbuf), 1, fp)))
++		{
++			//DPRINTF(E_WARN, L_SCANNER, "Could not read chunk header from %s\n", file);
++			//fclose(fp);
++			//return -1;
++			break;
++		}
++
++		//Property chunk
++		if (strncmp((char*)ckbuf, "PROP", 4) == 0)
++		{
++			propckDataSize = GET_DFF_INT64(ckbuf + 4);
++			totalcount += propckDataSize + 12;
++
++			unsigned char propckData[propckDataSize];
++
++			if (!(rt = fread(propckData, propckDataSize, 1, fp)))
++			{
++				DPRINTF(E_WARN, L_SCANNER, "Could not read Property chunk from %s\n", file);
++				fclose(fp);
++				return -1;
++			}
++
++			if (strncmp((char*)propckData, "SND ", 4))
++			{
++				DPRINTF(E_WARN, L_SCANNER, "Invalid Property chunk in %s\n", file);
++				fclose(fp);
++				return -1;
++			}
++
++			count += 4;
++			while (count < propckDataSize)
++			{
++				if (strncmp((char*)propckData + count, "FS  ", 4) == 0)
++				{
++					//Sample Rate Chunk
++					count += 12;
++					samplerate = GET_DFF_INT32(propckData + count);
++					psong->samplerate = samplerate;
++					count += 4;
++
++					//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "Sample Rate is %d\n", psong->samplerate);
++				}
++				else if (strncmp((char*)propckData + count, "CHNL", 4) == 0)
++				{
++					//Channels Chunk
++					count += 12;
++					channels = GET_DFF_INT16(propckData + count);
++					psong->channels = channels;
++					count += channels * 4 + 2;
++
++					//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "channels is %d\n", channels);
++				}
++				else if (strncmp((char*)propckData + count, "CMPR", 4) == 0)
++				{
++					//Compression Type Chunk
++					count += 4;
++					cmprckDataSize = GET_DFF_INT64(propckData + count);
++					count += 8;
++					strncpy((char*)compressionType, (char*)propckData + count, 4);
++					count += cmprckDataSize;
++				}
++				else if (strncmp((char*)propckData + count, "ABSS", 4) == 0)
++				{
++					//Absolute Start Time Chunk
++					count += 4;
++					abssckDataSize = GET_DFF_INT64(propckData + count);
++					count += abssckDataSize + 8;
++				}
++				else if (strncmp((char*)propckData + count, "LSCO", 4) == 0)
++				{
++					//Loudsperaker Configuration Chunk
++					count += 4;
++					lscockDataSize = GET_DFF_INT64(propckData + count);
++					count += lscockDataSize + 8;
++				}
++				else
++				{
++					break;
++				}
++			}
++
++			//bitrate bitpersample is 1bit
++			psong->bitrate = channels * samplerate * 1;
++
++			//DSD/DST Sound Data Chunk
++			len = 12;
++			if (!(rt = fread(dsdsdckData, len, 1, fp)))
++			{
++				DPRINTF(E_WARN, L_SCANNER, "Could not read DSD/DST Sound Data chunk from %s\n", file);
++				fclose(fp);
++				return -1;
++			}
++
++			if (strncmp((char*)compressionType, (char*)dsdsdckData, 4))
++			{
++				DPRINTF(E_WARN, L_SCANNER, "Invalid DSD/DST Sound Data chunk in %s\n", file);
++				fclose(fp);
++				return -1;
++			}
++
++			if (strncmp((char*)dsdsdckData, "DSD ", 4) == 0)
++			{
++				//DSD
++				dsdsdckDataSize = GET_DFF_INT64(dsdsdckData + 4);
++				totalcount += dsdsdckDataSize + 12;
++				psong->song_length = (int)((double)dsdsdckDataSize / (double)samplerate / (double)channels * 8 * 1000);
++
++				//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "songlength is %d\n", psong->song_length);
++
++				fseeko(fp, dsdsdckDataSize, SEEK_CUR);
++			}
++			else if (strncmp((char*)dsdsdckData, "DST ", 4) == 0)
++			{
++				//DST
++				dsdsdckDataSize = GET_DFF_INT64(dsdsdckData + 4);
++				totalcount += dsdsdckDataSize + 12;
++
++				//DST Frame Information chunk
++				if (!(rt = fread(frteckData, 18, 1, fp)))
++				{
++					DPRINTF(E_WARN, L_SCANNER, "Could not read DST Frame Information chunk from %s\n", file);
++					fclose(fp);
++					return -1;
++				}
++
++				if (strncmp((char*)frteckData, "FRTE", 4) == 0)
++				{
++					//uint64_t frteckDataSize = GET_DFF_INT64(frteckData+4);
++					numFrames = GET_DFF_INT32((char*)frteckData + 12);
++					frameRate = GET_DFF_INT16((char*)frteckData + 16);
++
++					psong->song_length = numFrames / frameRate * 1000;
++
++					fseeko(fp, dsdsdckDataSize - 18, SEEK_CUR);
++				}
++				else
++				{
++					DPRINTF(E_WARN, L_SCANNER, "Invalid DST Frame Information chunk in %s\n", file);
++					fclose(fp);
++					return -1;
++				}
++
++				//DST Sound Index Chunk
++				if (!(rt = fread(dstickData, 12, 1, fp)))
++				{
++					if (ferror(fp))
++					{
++						DPRINTF(E_WARN, L_SCANNER, "Could not read DST Sound Index chunk from %s\n", file);
++						fclose(fp);
++						return -1;
++					}
++					else
++					{
++						//EOF
++						break;
++					}
++				}
++
++				if (strncmp((char*)dstickData, "DSTI", 4) == 0)
++				{
++					dstickDataSize = GET_DFF_INT64(dstickData + 4);
++					totalcount += dstickDataSize + 12;
++					fseeko(fp, dstickDataSize, SEEK_CUR);
++				}
++				else
++				{
++					fseeko(fp, -12, SEEK_CUR);
++				}
++			}
++			else
++			{
++				DPRINTF(E_WARN, L_SCANNER, "Invalid DSD/DST Sound Data chunk in %s\n", file);
++				fclose(fp);
++				return -1;
++			}
++		}
++		else if (!strncmp((char*)ckbuf, "COMT", 4))
++		{
++			//COMT Chunk
++			comtckDataSize = GET_DFF_INT64(ckbuf + 4);
++			totalcount += comtckDataSize + 12;
++			fseeko(fp, comtckDataSize, SEEK_CUR);
++		}
++		else if (!strncmp((char*)ckbuf, "DIIN", 4))
++		{
++			//Edited Master Information chunk
++			diinckDataSize = GET_DFF_INT64(ckbuf + 4);
++			unsigned char diinckData[diinckDataSize];
++			totalcount += diinckDataSize + 12;
++
++			if (!(rt = fread(diinckData, diinckDataSize, 1, fp)))
++			{
++				DPRINTF(E_WARN, L_SCANNER, "Could not read Edited Master Information chunk from %s\n", file);
++				fclose(fp);
++				return -1;
++			}
++
++			uint64_t icount = 0;
++			while (icount < diinckDataSize)
++			{
++				if (!strncmp((char*)diinckData + icount, "EMID", 4))
++				{
++					//Edited Master ID chunk
++					icount += 4;
++					icount += GET_DFF_INT64(diinckData + icount) + 8;
++				}
++				else if (!strncmp((char*)diinckData + icount, "MARK", 4))
++				{
++					//Master Chunk
++					icount += 4;
++					icount += GET_DFF_INT64(diinckData + icount) + 8;
++				}
++				else if (!strncmp((char*)diinckData + icount, "DIAR", 4))
++				{
++					//Artist Chunk
++					icount += 4;
++					diarckDataSize = GET_DFF_INT64(diinckData + icount);
++					unsigned char arttext[diarckDataSize + 1 - 4];
++
++					icount += 12;
++
++					memset(arttext, 0x00, sizeof(arttext));
++					strncpy((char*)arttext, (char*)diinckData + icount, sizeof(arttext) - 1);
++					psong->contributor[ROLE_ARTIST] = strdup((char*)&arttext[0]);
++
++					icount += diarckDataSize - 4;
++				}
++				else if (!strncmp((char*)diinckData + icount, "DITI", 4))
++				{
++					//Title Chunk
++					icount += 4;
++					ditickDataSize = GET_DFF_INT64(diinckData + icount);
++					unsigned char titletext[ditickDataSize + 1 - 4];
++
++					icount += 12;
++
++					memset(titletext, 0x00, sizeof(titletext));
++					strncpy((char*)titletext, (char*)diinckData + icount, sizeof(titletext) - 1);
++					psong->title = strdup((char*)&titletext[0]);
++					icount += ditickDataSize - 4;
++				}
++				else
++				{
++					break;
++				}
++			}
++		}
++		else if (!strncmp((char*)ckbuf, "MANF", 4))
++		{
++			//Manufacturer Specific Chunk
++			manfckDataSize = GET_DFF_INT64(ckbuf + 4);
++			totalcount += manfckDataSize + 12;
++			fseeko(fp, manfckDataSize, SEEK_CUR);
++		}
++	}
++
++	fclose(fp);
++
++	//DPRINTF(E_DEBUG, L_SCANNER, "totalsize is 0x%016lx\n", (long unsigned int)totalsize);
++	//DPRINTF(E_DEBUG, L_SCANNER, "propckDataSize is 0x%016lx\n", (long unsigned int)propckDataSize);
++	//DPRINTF(E_DEBUG, L_SCANNER, "cmprckDataSize is 0x%016lx\n", (long unsigned int)cmprckDataSize);
++	//DPRINTF(E_DEBUG, L_SCANNER, "abssckDataSize is 0x%016lx\n", (long unsigned int)abssckDataSize);
++	//DPRINTF(E_DEBUG, L_SCANNER, "lscockDataSize is 0x%016lx\n", (long unsigned int)lscockDataSize);
++	//DPRINTF(E_DEBUG, L_SCANNER, "dsdsdckDataSize is 0x%016lx\n", (long unsigned int)dsdsdckDataSize);
++	//DPRINTF(E_DEBUG, L_SCANNER, "dstickDataSize is 0x%016lx\n", (long unsigned int)dstickDataSize);
++	//DPRINTF(E_DEBUG, L_SCANNER, "comtckDataSize is 0x%016lx\n", (long unsigned int)comtckDataSize);
++	//DPRINTF(E_DEBUG, L_SCANNER, "diinckDataSize is 0x%016lx\n", (long unsigned int)diinckDataSize);
++	//DPRINTF(E_DEBUG, L_SCANNER, "diarckDataSize is 0x%016lx\n", (long unsigned int)diarckDataSize);
++	//DPRINTF(E_DEBUG, L_SCANNER, "ditickDataSize is 0x%016lx\n", (long unsigned int)ditickDataSize);
++	//DPRINTF(E_DEBUG, L_SCANNER, "manfckDataSize is 0x%016lx\n", (long unsigned int)manfckDataSize);
++
++
++	//DPRINTF(E_DEBUG, L_SCANNER, "Got dff fileinfo successfully=%s\n", file);
++	//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "TITLE is %s\n",psong->title );
++	//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "ARTIST is %s\n",psong->contributor[ROLE_ARTIST]);
++	//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "samplerate is  %d\n", psong->samplerate);
++	//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "song_length is  %d\n", psong->song_length);
++	//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "channels are  %d\n", psong->channels);
++	//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "bitrate is  %d\n", psong->bitrate);
++
++	xasprintf(&(psong->dlna_pn), "DFF");
++	return 0;
++}
+diff --git a/tagutils/tagutils-dff.h b/tagutils/tagutils-dff.h
+new file mode 100644
+index 0000000..7f3e3a4
+--- /dev/null
++++ b/tagutils/tagutils-dff.h
+@@ -0,0 +1,22 @@
++//=========================================================================
++// FILENAME     : tagutils-dff.h
++// DESCRIPTION  : DFF metadata reader
++//=========================================================================
++// Copyright (c) 2014 Takeshich NAKAMURA
++//=========================================================================
++
++/*
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++static int _get_dfffileinfo(char *file, struct song_metadata *psong);
+diff --git a/tagutils/tagutils-dsf.c b/tagutils/tagutils-dsf.c
+new file mode 100644
+index 0000000..fe76ce6
+--- /dev/null
++++ b/tagutils/tagutils-dsf.c
+@@ -0,0 +1,426 @@
++//=========================================================================
++// FILENAME	: tagutils-dsf.c
++// DESCRIPTION	: DSF metadata reader
++//=========================================================================
++// Copyright (c) 2014 Takeshich NAKAMURA
++// based on tagutils-mp3.c
++//=========================================================================
++
++/*
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#define GET_DSF_INT64(p) ((((uint64_t)((p)[7])) << 56) |   \
++			  (((uint64_t)((p)[6])) << 48) |   \
++			  (((uint64_t)((p)[5])) << 40) |   \
++			  (((uint64_t)((p)[4])) << 32) |   \
++			  (((uint64_t)((p)[3])) << 24) |   \
++			  (((uint64_t)((p)[2])) << 16) |   \
++			  (((uint64_t)((p)[1])) << 8) |    \
++			  (((uint64_t)((p)[0]))))
++
++#define GET_DSF_INT32(p) ((((uint8_t)((p)[3])) << 24) |   \
++			  (((uint8_t)((p)[2])) << 16) |   \
++			  (((uint8_t)((p)[1])) << 8) |     \
++			  (((uint8_t)((p)[0]))))
++
++static int
++_get_dsftags(char *file, struct song_metadata *psong)
++{
++	struct id3_tag *pid3tag;
++	struct id3_frame *pid3frame;
++	int err;
++	int index;
++	int used;
++	unsigned char *utf8_text;
++	int genre = WINAMP_GENRE_UNKNOWN;
++	int have_utf8;
++	int have_text;
++	id3_ucs4_t const *native_text;
++	char *tmp;
++	int got_numeric_genre;
++	id3_byte_t const *image;
++	id3_length_t image_size = 0;
++
++	FILE *fp;
++	struct id3header *pid3;
++	uint32_t len;
++	unsigned char hdr[28] = { 0 };
++	uint64_t total_size = 0;
++	uint64_t pointer_to_metadata_chunk = 0;
++	uint64_t metadata_chunk_size = 0;
++	unsigned char *id3tagbuf = NULL;
++
++	//DEBUG DPRINTF(E_DEBUG,L_SCANNER,"Getting DSF file info\n");
++
++	if ((fp = fopen(file, "rb")) == NULL)
++	{
++		DPRINTF(E_WARN, L_SCANNER, "Could not create file handle\n");
++		return -1;
++	}
++
++	len = 28;
++	if (!(len = fread(hdr, len, 1, fp)))
++	{
++		DPRINTF(E_WARN, L_SCANNER, "Could not read DSD Chunk from %s\n", file);
++		fclose(fp);
++		return -1;
++	}
++
++	if (strncmp((char*)hdr, "DSD ", 4))
++	{
++		DPRINTF(E_WARN, L_SCANNER, "Invalid DSD Chunk header in %s\n", file);
++		fclose(fp);
++		return -1;
++	}
++
++	total_size = GET_DSF_INT64(hdr + 12);
++	pointer_to_metadata_chunk = GET_DSF_INT64(hdr + 20);
++
++	//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "%llu\n", total_size);
++	//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "%llu\n", pointer_to_metadata_chunk);
++	//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "%llu\n", metadata_chunk_size);
++
++	//check invalid metadata
++	if (total_size == 0)
++	{
++		fclose(fp);
++		DPRINTF(E_INFO, L_SCANNER, "Invalid TotalDataSize in %s\n", file);
++		return 0;
++	}
++
++	if (pointer_to_metadata_chunk == 0)
++	{
++		fclose(fp);
++		DPRINTF(E_INFO, L_SCANNER, "Metadata doesn't exist %s\n", file);
++		return 0;
++	}
++
++	if (total_size > pointer_to_metadata_chunk)
++	{
++		metadata_chunk_size = total_size - pointer_to_metadata_chunk;
++	}
++	else
++	{
++		fclose(fp);
++		DPRINTF(E_INFO, L_SCANNER, "Invalid PointerToMetadata in %s\n", file);
++		return 0;
++	}
++
++	fseeko(fp, pointer_to_metadata_chunk, SEEK_SET);
++
++	id3tagbuf = (unsigned char*)malloc(sizeof(unsigned char) * metadata_chunk_size);
++	if (id3tagbuf == NULL)
++	{
++		fclose(fp);
++		DPRINTF(E_WARN, L_SCANNER, "Out of memory.Big MetadataSize in %s\n", file);
++		return -1;
++	}
++	memset(id3tagbuf, 0, sizeof(unsigned char) * metadata_chunk_size);
++
++	if (!(len = fread(id3tagbuf, metadata_chunk_size, 1, fp)))
++	{
++		fclose(fp);
++		free(id3tagbuf);
++		DPRINTF(E_WARN, L_SCANNER, "Could not read Metadata Chunk from %s\n", file);
++		return -1;
++	}
++
++	pid3tag = id3_tag_parse(id3tagbuf, metadata_chunk_size);
++
++	if (!pid3tag)
++	{
++		free(id3tagbuf);
++		err = errno;
++		errno = err;
++		DPRINTF(E_WARN, L_SCANNER, "Cannot get ID3 tag for %s\n", file);
++		return -1;
++	}
++
++	pid3 = (struct id3header*)id3tagbuf;
++
++	if (strncmp((char*)pid3->id, "ID3", 3) == 0)
++	{
++		char tagversion[16];
++
++		/* found an ID3 header... */
++		snprintf(tagversion, sizeof(tagversion), "ID3v2.%d.%d",
++			 pid3->version[0], pid3->version[1]);
++		psong->tagversion = strdup(tagversion);
++	}
++	pid3 = NULL;
++
++	index = 0;
++	while ((pid3frame = id3_tag_findframe(pid3tag, "", index)))
++	{
++		used = 0;
++		utf8_text = NULL;
++		native_text = NULL;
++		have_utf8 = 0;
++		have_text = 0;
++
++		if (!strcmp(pid3frame->id, "YTCP"))   /* for id3v2.2 */
++		{
++			psong->compilation = 1;
++			DPRINTF(E_DEBUG, L_SCANNER, "Compilation: %d [%s]\n", psong->compilation, basename(file));
++		}
++		else if (!strcmp(pid3frame->id, "APIC") && !image_size)
++		{
++			if ((strcmp((char*)id3_field_getlatin1(&pid3frame->fields[1]), "image/jpeg") == 0) ||
++			    (strcmp((char*)id3_field_getlatin1(&pid3frame->fields[1]), "image/jpg") == 0) ||
++			    (strcmp((char*)id3_field_getlatin1(&pid3frame->fields[1]), "jpeg") == 0))
++			{
++				image = id3_field_getbinarydata(&pid3frame->fields[4], &image_size);
++				if (image_size)
++				{
++					psong->image = malloc(image_size);
++					memcpy(psong->image, image, image_size);
++					psong->image_size = image_size;
++					//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "Found thumbnail: %d\n", psong->image_size);
++				}
++			}
++		}
++
++		if (((pid3frame->id[0] == 'T') || (strcmp(pid3frame->id, "COMM") == 0)) &&
++		    (id3_field_getnstrings(&pid3frame->fields[1])))
++			have_text = 1;
++
++		if (have_text)
++		{
++			native_text = id3_field_getstrings(&pid3frame->fields[1], 0);
++
++			if (native_text)
++			{
++				have_utf8 = 1;
++				if (lang_index >= 0)
++					utf8_text = _get_utf8_text(native_text); // through iconv
++				else
++					utf8_text = (unsigned char*)id3_ucs4_utf8duplicate(native_text);
++
++				if (!strcmp(pid3frame->id, "TIT2"))
++				{
++					used = 1;
++					psong->title = (char*)utf8_text;
++				}
++				else if (!strcmp(pid3frame->id, "TPE1"))
++				{
++					used = 1;
++					psong->contributor[ROLE_ARTIST] = (char*)utf8_text;
++				}
++				else if (!strcmp(pid3frame->id, "TALB"))
++				{
++					used = 1;
++					psong->album = (char*)utf8_text;
++				}
++				else if (!strcmp(pid3frame->id, "TCOM"))
++				{
++					used = 1;
++					psong->contributor[ROLE_COMPOSER] = (char*)utf8_text;
++				}
++				else if (!strcmp(pid3frame->id, "TIT1"))
++				{
++					used = 1;
++					psong->grouping = (char*)utf8_text;
++				}
++				else if (!strcmp(pid3frame->id, "TPE2"))
++				{
++					used = 1;
++					psong->contributor[ROLE_BAND] = (char*)utf8_text;
++				}
++				else if (!strcmp(pid3frame->id, "TPE3"))
++				{
++					used = 1;
++					psong->contributor[ROLE_CONDUCTOR] = (char*)utf8_text;
++				}
++				else if (!strcmp(pid3frame->id, "TCON"))
++				{
++					used = 1;
++					psong->genre = (char*)utf8_text;
++					got_numeric_genre = 0;
++					if (psong->genre)
++					{
++						if (!strlen(psong->genre))
++						{
++							genre = WINAMP_GENRE_UNKNOWN;
++							got_numeric_genre = 1;
++						}
++						else if (isdigit(psong->genre[0]))
++						{
++							genre = atoi(psong->genre);
++							got_numeric_genre = 1;
++						}
++						else if ((psong->genre[0] == '(') && (isdigit(psong->genre[1])))
++						{
++							genre = atoi((char*)&psong->genre[1]);
++							got_numeric_genre = 1;
++						}
++
++						if (got_numeric_genre)
++						{
++							if ((genre < 0) || (genre > WINAMP_GENRE_UNKNOWN))
++								genre = WINAMP_GENRE_UNKNOWN;
++							free(psong->genre);
++							psong->genre = strdup(winamp_genre[genre]);
++						}
++					}
++				}
++				else if (!strcmp(pid3frame->id, "COMM"))
++				{
++					used = 1;
++					psong->comment = (char*)utf8_text;
++				}
++				else if (!strcmp(pid3frame->id, "TPOS"))
++				{
++					tmp = (char*)utf8_text;
++					strsep(&tmp, "/");
++					if (tmp)
++					{
++						psong->total_discs = atoi(tmp);
++					}
++					psong->disc = atoi((char*)utf8_text);
++				}
++				else if (!strcmp(pid3frame->id, "TRCK"))
++				{
++					tmp = (char*)utf8_text;
++					strsep(&tmp, "/");
++					if (tmp)
++					{
++						psong->total_tracks = atoi(tmp);
++					}
++					psong->track = atoi((char*)utf8_text);
++				}
++				else if (!strcmp(pid3frame->id, "TDRC"))
++				{
++					psong->year = atoi((char*)utf8_text);
++				}
++				else if (!strcmp(pid3frame->id, "TLEN"))
++				{
++					psong->song_length = atoi((char*)utf8_text);
++				}
++				else if (!strcmp(pid3frame->id, "TBPM"))
++				{
++					psong->bpm = atoi((char*)utf8_text);
++				}
++				else if (!strcmp(pid3frame->id, "TCMP"))
++				{
++					psong->compilation = (char)atoi((char*)utf8_text);
++				}
++			}
++		}
++
++		// check if text tag
++		if ((!used) && (have_utf8) && (utf8_text))
++			free(utf8_text);
++
++		// v2 COMM
++		if ((!strcmp(pid3frame->id, "COMM")) && (pid3frame->nfields == 4))
++		{
++			native_text = id3_field_getstring(&pid3frame->fields[2]);
++			if (native_text)
++			{
++				utf8_text = (unsigned char*)id3_ucs4_utf8duplicate(native_text);
++				if ((utf8_text) && (strncasecmp((char*)utf8_text, "iTun", 4) != 0))
++				{
++					// read comment
++					free(utf8_text);
++
++					native_text = id3_field_getfullstring(&pid3frame->fields[3]);
++					if (native_text)
++					{
++						utf8_text = (unsigned char*)id3_ucs4_utf8duplicate(native_text);
++						if (utf8_text)
++						{
++							free(psong->comment);
++							psong->comment = (char*)utf8_text;
++						}
++					}
++				}
++				else
++				{
++					free(utf8_text);
++				}
++			}
++		}
++
++		index++;
++	}
++
++	id3_tag_delete(pid3tag);
++	free(id3tagbuf);
++	fclose(fp);
++	//DPRINTF(E_DEBUG, L_SCANNER, "Got id3tag successfully for file=%s\n", file);
++	return 0;
++}
++
++static int
++_get_dsffileinfo(char *file, struct song_metadata *psong)
++{
++	FILE *fp;
++	int len = 80;
++	unsigned char hdr[len];
++	uint32_t channelnum;
++	uint32_t samplingfrequency;
++	uint32_t bitpersample;
++	uint64_t samplecount;
++
++	if ((fp = fopen(file, "rb")) == NULL)
++	{
++		DPRINTF(E_WARN, L_SCANNER, "Could not create file handle\n");
++		return -1;
++	}
++
++	if (!(len = fread(hdr, len, 1, fp)))
++	{
++		DPRINTF(E_WARN, L_SCANNER, "Could not read chunks from %s\n", file);
++		fclose(fp);
++		return -1;
++	}
++
++	if (strncmp((char*)hdr, "DSD ", 4))
++	{
++		DPRINTF(E_WARN, L_SCANNER, "Invalid DSD Chunk headerin %s\n", file);
++		fclose(fp);
++		return -1;
++	}
++
++	if (strncmp((char*)hdr + 28, "fmt ", 4))
++	{
++		DPRINTF(E_WARN, L_SCANNER, "Invalid fmt Chunk header in %s\n", file);
++		fclose(fp);
++		return -1;
++	}
++
++	channelnum = GET_DSF_INT32(hdr + 52);
++	samplingfrequency = GET_DSF_INT32(hdr + 56);
++	bitpersample = GET_DSF_INT32(hdr + 60);
++	samplecount = GET_DSF_INT64(hdr + 64);
++
++	psong->bitrate = channelnum * samplingfrequency * bitpersample;
++	psong->samplesize = bitpersample;
++	psong->samplerate = samplingfrequency;
++	psong->song_length = (samplecount / samplingfrequency) * 1000;
++	psong->channels = channelnum;
++
++	DPRINTF(E_MAXDEBUG, L_SCANNER, "Got file info successfully for %s\n", file);
++	//DEBUG DPRINTF(E_MAXDEBUG, L_SCANNER, "bitrate is  %d\n", psong->bitrate);
++	//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "samplesize is  %d\n", psong->samplesize);
++	//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "samplerate is  %d\n", psong->samplerate);
++	//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "song_length is  %d\n", psong->song_length);
++	//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "channels are  %d\n", psong->channels);
++	//DEBUG DPRINTF(E_DEBUG, L_SCANNER, "samplecount are  %lld\n", samplecount);
++	fclose(fp);
++
++	xasprintf(&(psong->dlna_pn), "DSF");
++	return 0;
++}
+diff --git a/tagutils/tagutils-dsf.h b/tagutils/tagutils-dsf.h
+new file mode 100644
+index 0000000..9b7634e
+--- /dev/null
++++ b/tagutils/tagutils-dsf.h
+@@ -0,0 +1,23 @@
++//=========================================================================
++// FILENAME	: tagutils-dsf.h
++// DESCRIPTION	: DSF metadata reader
++//=========================================================================
++// Copyright (c) 2014 Takeshich NAKAMURA
++//=========================================================================
++
++/*
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++static int _get_dsffileinfo(char *file, struct song_metadata *psong);
++static int _get_dsftags(char *file, struct song_metadata *psong);
+diff --git a/tagutils/tagutils-misc.c b/tagutils/tagutils-misc.c
+index 9f9436b..0075bab 100644
+--- a/tagutils/tagutils-misc.c
++++ b/tagutils/tagutils-misc.c
+@@ -188,7 +188,9 @@ vc_scan(struct song_metadata *psong, const char *comment, const size_t length)
+ 
+ 	if(length > (sizeof(strbuf) - 1))
+ 	{
+-		if( strncasecmp(comment, "LYRICS=", 7) != 0 )
++		if( strncasecmp(comment, "LYRICS=", 7) != 0 &&
++		    strncasecmp(comment, "coverart=", 9) != 0 &&
++		    strncasecmp(comment, "METADATA_BLOCK_PICTURE=", 23) != 0 )
+ 		{
+ 			const char *eq = strchr(comment, '=');
+ 			int len = 8;
+diff --git a/tagutils/tagutils-ogg.c b/tagutils/tagutils-ogg.c
+index 3e1417f..24243ad 100644
+--- a/tagutils/tagutils-ogg.c
++++ b/tagutils/tagutils-ogg.c
+@@ -435,7 +435,7 @@ _get_oggfileinfo(char *filename, struct song_metadata *psong)
+ 		return -1;
+ 	}
+ 
+-	DPRINTF(E_MAXDEBUG, L_SCANNER, "Processing file \"%s\"...\n\n", filename);
++	DPRINTF(E_MAXDEBUG, L_SCANNER, "Processing file \"%s\"...\n", filename);
+ 
+ 	ogg_sync_init(&sync);
+ 
+diff --git a/tagutils/tagutils.c b/tagutils/tagutils.c
+index 1a1b379..b38a8a5 100644
+--- a/tagutils/tagutils.c
++++ b/tagutils/tagutils.c
+@@ -111,6 +111,8 @@ char *winamp_genre[] = {
+ #include "tagutils-asf.h"
+ #include "tagutils-wav.h"
+ #include "tagutils-pcm.h"
++#include "tagutils-dsf.h"
++#include "tagutils-dff.h"
+ 
+ static int _get_tags(char *file, struct song_metadata *psong);
+ static int _get_fileinfo(char *file, struct song_metadata *psong);
+@@ -127,16 +129,18 @@ typedef struct {
+ } taghandler;
+ 
+ static taghandler taghandlers[] = {
+-	{ "aac", _get_aactags, _get_aacfileinfo                                  },
+-	{ "mp3", _get_mp3tags, _get_mp3fileinfo                                  },
+-	{ "flc", _get_flctags, _get_flcfileinfo                                  },
++	{ "aac", _get_aactags,	_get_aacfileinfo },
++	{ "mp3", _get_mp3tags,	_get_mp3fileinfo },
++	{ "flc", _get_flctags,	_get_flcfileinfo },
+ #ifdef HAVE_VORBISFILE
+-	{ "ogg", 0,            _get_oggfileinfo                                  },
++	{ "ogg", NULL,		_get_oggfileinfo },
+ #endif
+-	{ "asf", 0,            _get_asffileinfo                                  },
+-	{ "wav", _get_wavtags, _get_wavfileinfo                                  },
+-	{ "pcm", 0,            _get_pcmfileinfo                                  },
+-	{ NULL,  0 }
++	{ "asf", NULL,		_get_asffileinfo },
++	{ "wav", _get_wavtags,	_get_wavfileinfo },
++	{ "pcm", NULL,		_get_pcmfileinfo },
++	{ "dsf", _get_dsftags,	_get_dsffileinfo },
++	{ "dff", NULL,		_get_dfffileinfo },
++	{ NULL,  NULL, NULL }
+ };
+ 
+ 
+@@ -153,6 +157,8 @@ static taghandler taghandlers[] = {
+ #include "tagutils-wav.c"
+ #include "tagutils-pcm.c"
+ #include "tagutils-plist.c"
++#include "tagutils-dsf.c"
++#include "tagutils-dff.c"
+ 
+ //*********************************************************************************
+ // freetags()
+diff --git a/tivo_beacon.c b/tivo_beacon.c
+index f2f80aa..bc8c976 100644
+--- a/tivo_beacon.c
++++ b/tivo_beacon.c
+@@ -47,6 +47,7 @@
+ #include <sys/poll.h>
+ #include <netdb.h>
+ 
++#include "event.h"
+ #include "tivo_beacon.h"
+ #include "upnpglobalvars.h"
+ #include "log.h"
+@@ -288,15 +289,16 @@ rcvBeaconMessage(char *beacon)
+ 	return 0;
+ }
+ 
+-void ProcessTiVoBeacon(int s)
++void ProcessTiVoBeacon(struct event *ev)
+ {
+-	int n;
++	int s, n;
+ 	char *cp;
+ 	struct sockaddr_in sendername;
+ 	socklen_t len_r;
+ 	char bufr[1500];
+ 	len_r = sizeof(struct sockaddr_in);
+ 
++	s = ev->fd;
+ 	/* We only expect to see beacon msgs from TiVo's and possibly other tivo servers */
+ 	n = recvfrom(s, bufr, sizeof(bufr), 0,
+ 	             (struct sockaddr *)&sendername, &len_r);
+diff --git a/tivo_beacon.h b/tivo_beacon.h
+index 738042c..166fc53 100644
+--- a/tivo_beacon.h
++++ b/tivo_beacon.h
+@@ -46,5 +46,5 @@ void
+ sendBeaconMessage(int fd, struct sockaddr_in * client, int len, int broadcast);
+ 
+ void
+-ProcessTiVoBeacon(int fd);
++ProcessTiVoBeacon(struct event *);
+ #endif
+diff --git a/tivo_commands.c b/tivo_commands.c
+index 61e0a6e..d4ab157 100644
+--- a/tivo_commands.c
++++ b/tivo_commands.c
+@@ -24,6 +24,7 @@
+ #include <time.h>
+ #include <sys/stat.h>
+ 
++#include "event.h"
+ #include "tivo_utils.h"
+ #include "upnpglobalvars.h"
+ #include "upnphttp.h"
+diff --git a/upnpdescgen.c b/upnpdescgen.c
+index 8891fb6..3311cef 100644
+--- a/upnpdescgen.c
++++ b/upnpdescgen.c
+@@ -31,6 +31,7 @@
+ #include <string.h>
+ 
+ #include "config.h"
++#include "event.h"
+ #include "getifaddr.h"
+ #include "upnpdescgen.h"
+ #include "minidlnapath.h"
+diff --git a/upnpevents.c b/upnpevents.c
+index 8d19fe1..4de6ce8 100644
+--- a/upnpevents.c
++++ b/upnpevents.c
+@@ -59,9 +59,11 @@
+ #include <sys/param.h>
+ #include <netinet/in.h>
+ #include <arpa/inet.h>
++#include <assert.h>
+ #include <fcntl.h>
+ #include <errno.h>
+ 
++#include "event.h"
+ #include "upnpevents.h"
+ #include "minidlnapath.h"
+ #include "upnpglobalvars.h"
+@@ -82,10 +84,9 @@ struct subscriber {
+ };
+ 
+ struct upnp_event_notify {
++	struct event ev;
+ 	LIST_ENTRY(upnp_event_notify) entries;
+-	int s;  /* socket */
+-	enum { ECreated=1,
+-	       EConnecting,
++	enum { EConnecting,
+ 	       ESending,
+ 	       EWaitingForResponse,
+ 	       EFinished,
+@@ -101,8 +102,8 @@ struct upnp_event_notify {
+ };
+ 
+ /* prototypes */
+-static void
+-upnp_event_create_notify(struct subscriber * sub);
++static void upnp_event_create_notify(struct subscriber * sub);
++static void upnp_event_process_notify(struct event *ev);
+ 
+ /* Subscriber list */
+ LIST_HEAD(listhead, subscriber) subscriberlist = { NULL };
+@@ -224,30 +225,35 @@ upnp_event_var_change_notify(enum subscriber_service_enum service)
+ 	}
+ }
+ 
+-/* create and add the notify object to the list */
++/* create and add the notify object to the list, start connecting */
+ static void
+-upnp_event_create_notify(struct subscriber * sub)
++upnp_event_create_notify(struct subscriber *sub)
+ {
+ 	struct upnp_event_notify * obj;
+-	int flags;
++	int flags, s, i;
++	const char *p;
++	unsigned short port;
++	struct sockaddr_in addr;
++
++	assert(sub);
++
+ 	obj = calloc(1, sizeof(struct upnp_event_notify));
+ 	if(!obj) {
+ 		DPRINTF(E_ERROR, L_HTTP, "%s: calloc(): %s\n", "upnp_event_create_notify", strerror(errno));
+ 		return;
+ 	}
+ 	obj->sub = sub;
+-	obj->state = ECreated;
+-	obj->s = socket(PF_INET, SOCK_STREAM, 0);
+-	if(obj->s<0) {
++	s = socket(PF_INET, SOCK_STREAM, 0);
++	if(s < 0) {
+ 		DPRINTF(E_ERROR, L_HTTP, "%s: socket(): %s\n", "upnp_event_create_notify", strerror(errno));
+ 		goto error;
+ 	}
+-	if((flags = fcntl(obj->s, F_GETFL, 0)) < 0) {
++	if((flags = fcntl(s, F_GETFL, 0)) < 0) {
+ 		DPRINTF(E_ERROR, L_HTTP, "%s: fcntl(..F_GETFL..): %s\n",
+ 		       "upnp_event_create_notify", strerror(errno));
+ 		goto error;
+ 	}
+-	if(fcntl(obj->s, F_SETFL, flags | O_NONBLOCK) < 0) {
++	if(fcntl(s, F_SETFL, flags | O_NONBLOCK) < 0) {
+ 		DPRINTF(E_ERROR, L_HTTP, "%s: fcntl(..F_SETFL..): %s\n",
+ 		       "upnp_event_create_notify", strerror(errno));
+ 		goto error;
+@@ -255,28 +261,9 @@ upnp_event_create_notify(struct subscriber * sub)
+ 	if(sub)
+ 		sub->notify = obj;
+ 	LIST_INSERT_HEAD(&notifylist, obj, entries);
+-	return;
+-error:
+-	if(obj->s >= 0)
+-		close(obj->s);
+-	free(obj);
+-}
+ 
+-static void
+-upnp_event_notify_connect(struct upnp_event_notify * obj)
+-{
+-	int i;
+-	const char * p;
+-	unsigned short port;
+-	struct sockaddr_in addr;
+-	if(!obj)
+-		return;
+ 	memset(&addr, 0, sizeof(addr));
+ 	i = 0;
+-	if(obj->sub == NULL) {
+-		obj->state = EError;
+-		return;
+-	}
+ 	p = obj->sub->callback;
+ 	p += 7;	/* http:// */
+ 	while(*p != '/' && *p != ':' && i < (sizeof(obj->addrstr)-1))
+@@ -306,12 +293,23 @@ upnp_event_notify_connect(struct upnp_event_notify * obj)
+ 	DPRINTF(E_DEBUG, L_HTTP, "%s: '%s' %hu '%s'\n", "upnp_event_notify_connect",
+ 	       obj->addrstr, port, obj->path);
+ 	obj->state = EConnecting;
+-	if(connect(obj->s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
++	if(connect(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+ 		if(errno != EINPROGRESS && errno != EWOULDBLOCK) {
+ 			DPRINTF(E_ERROR, L_HTTP, "%s: connect(): %s\n", "upnp_event_notify_connect", strerror(errno));
+ 			obj->state = EError;
+ 		}
++	} else {
++		obj->ev = (struct event ){ .fd = s, .rdwr = EVENT_WRITE,
++		    .process = upnp_event_process_notify, .data = obj };
++		event_module.add(&obj->ev);
+ 	}
++
++	return;
++
++error:
++	if(s >= 0)
++		close(s);
++	free(obj);
+ }
+ 
+ static void upnp_event_prepare(struct upnp_event_notify * obj)
+@@ -331,10 +329,9 @@ static void upnp_event_prepare(struct upnp_event_notify * obj)
+ 		"%.*s\r\n";
+ 	char * xml;
+ 	int l;
+-	if(obj->sub == NULL) {
+-		obj->state = EError;
+-		return;
+-	}
++
++	assert(obj->sub);
++
+ 	switch(obj->sub->service) {
+ 	case EContentDirectory:
+ 		xml = getVarsContentDirectory(&l);
+@@ -364,30 +361,37 @@ static void upnp_event_send(struct upnp_event_notify * obj)
+ 	int i;
+ 	//DEBUG DPRINTF(E_DEBUG, L_HTTP, "Sending UPnP Event:\n%s", obj->buffer+obj->sent);
+ 	while( obj->sent < obj->tosend ) {
+-		i = send(obj->s, obj->buffer + obj->sent, obj->tosend - obj->sent, 0);
++		i = send(obj->ev.fd, obj->buffer + obj->sent, obj->tosend - obj->sent, 0);
+ 		if(i<0) {
+ 			DPRINTF(E_WARN, L_HTTP, "%s: send(): %s\n", "upnp_event_send", strerror(errno));
+ 			obj->state = EError;
++			event_module.del(&obj->ev, 0);
+ 			return;
+ 		}
+ 		obj->sent += i;
+ 	}
+-	if(obj->sent == obj->tosend)
++	if(obj->sent == obj->tosend) {
+ 		obj->state = EWaitingForResponse;
++		event_module.del(&obj->ev, 0);
++		obj->ev.rdwr = EVENT_READ;
++		event_module.add(&obj->ev);
++	}
+ }
+ 
+ static void upnp_event_recv(struct upnp_event_notify * obj)
+ {
+ 	int n;
+-	n = recv(obj->s, obj->buffer, obj->buffersize, 0);
++	n = recv(obj->ev.fd, obj->buffer, obj->buffersize, 0);
+ 	if(n<0) {
+ 		DPRINTF(E_ERROR, L_HTTP, "%s: recv(): %s\n", "upnp_event_recv", strerror(errno));
+ 		obj->state = EError;
++		event_module.del(&obj->ev, 0);
+ 		return;
+ 	}
+ 	DPRINTF(E_DEBUG, L_HTTP, "%s: (%dbytes) %.*s\n", "upnp_event_recv",
+ 	       n, n, obj->buffer);
+ 	obj->state = EFinished;
++	event_module.del(&obj->ev, 0);
+ 	if(obj->sub)
+ 	{
+ 		obj->sub->seq++;
+@@ -397,8 +401,10 @@ static void upnp_event_recv(struct upnp_event_notify * obj)
+ }
+ 
+ static void
+-upnp_event_process_notify(struct upnp_event_notify * obj)
++upnp_event_process_notify(struct event *ev)
+ {
++	struct upnp_event_notify *obj = ev->data;
++
+ 	switch(obj->state) {
+ 	case EConnecting:
+ 		/* now connected or failed to connect */
+@@ -412,66 +418,28 @@ upnp_event_process_notify(struct upnp_event_notify * obj)
+ 		upnp_event_recv(obj);
+ 		break;
+ 	case EFinished:
+-		close(obj->s);
+-		obj->s = -1;
++		close(obj->ev.fd);
++		obj->ev.fd = -1;
+ 		break;
+ 	default:
+ 		DPRINTF(E_ERROR, L_HTTP, "upnp_event_process_notify: unknown state\n");
+ 	}
+ }
+ 
+-void upnpevents_selectfds(fd_set *readset, fd_set *writeset, int * max_fd)
+-{
+-	struct upnp_event_notify * obj;
+-	for(obj = notifylist.lh_first; obj != NULL; obj = obj->entries.le_next) {
+-		DPRINTF(E_DEBUG, L_HTTP, "upnpevents_selectfds: %p %d %d\n",
+-		       obj, obj->state, obj->s);
+-		if(obj->s >= 0) {
+-			switch(obj->state) {
+-			case ECreated:
+-				upnp_event_notify_connect(obj);
+-				if(obj->state != EConnecting)
+-					break;
+-			case EConnecting:
+-			case ESending:
+-				FD_SET(obj->s, writeset);
+-				if(obj->s > *max_fd)
+-					*max_fd = obj->s;
+-				break;
+-			case EWaitingForResponse:
+-				FD_SET(obj->s, readset);
+-				if(obj->s > *max_fd)
+-					*max_fd = obj->s;
+-				break;
+-			default:
+-				break;
+-			}
+-		}
+-	}
+-}
+-
+-void upnpevents_processfds(fd_set *readset, fd_set *writeset)
++void upnpevents_gc(void)
+ {
+ 	struct upnp_event_notify * obj;
+ 	struct upnp_event_notify * next;
+ 	struct subscriber * sub;
+ 	struct subscriber * subnext;
+ 	time_t curtime;
+-	for(obj = notifylist.lh_first; obj != NULL; obj = obj->entries.le_next) {
+-		DPRINTF(E_DEBUG, L_HTTP, "%s: %p %d %d %d %d\n",
+-		       "upnpevents_processfds", obj, obj->state, obj->s,
+-		       FD_ISSET(obj->s, readset), FD_ISSET(obj->s, writeset));
+-		if(obj->s >= 0) {
+-			if(FD_ISSET(obj->s, readset) || FD_ISSET(obj->s, writeset))
+-				upnp_event_process_notify(obj);
+-		}
+-	}
++
+ 	obj = notifylist.lh_first;
+ 	while(obj != NULL) {
+ 		next = obj->entries.le_next;
+ 		if(obj->state == EError || obj->state == EFinished) {
+-			if(obj->s >= 0) {
+-				close(obj->s);
++			if(obj->ev.fd >= 0) {
++				close(obj->ev.fd);
+ 			}
+ 			if(obj->sub)
+ 				obj->sub->notify = NULL;
+diff --git a/upnpevents.h b/upnpevents.h
+index 5dcd0d9..fa6c104 100644
+--- a/upnpevents.h
++++ b/upnpevents.h
+@@ -63,12 +63,10 @@ upnpevents_addSubscriber(const char * eventurl,
+ 
+ int upnpevents_removeSubscriber(const char * sid, int sidlen);
+ void upnpevents_removeSubscribers(void);
++void upnpevents_gc(void);
+ 
+ int renewSubscription(const char * sid, int sidlen, int timeout);
+ 
+-void upnpevents_selectfds(fd_set *readset, fd_set *writeset, int * max_fd);
+-void upnpevents_processfds(fd_set *readset, fd_set *writeset);
+-
+ #ifdef USE_MINIUPNPDCTL
+ void write_events_details(int s);
+ #endif
+diff --git a/upnpglobalvars.c b/upnpglobalvars.c
+index 2ca5676..1625bdb 100644
+--- a/upnpglobalvars.c
++++ b/upnpglobalvars.c
+@@ -58,7 +58,7 @@
+ time_t startup_time = 0;
+ 
+ struct runtime_vars_s runtime_vars;
+-uint32_t runtime_flags = INOTIFY_MASK | TIVO_BONJOUR_MASK;
++uint32_t runtime_flags = INOTIFY_MASK | TIVO_BONJOUR_MASK | SUBTITLES_MASK;
+ 
+ const char *pidfilename = "/var/run/minidlna/minidlna.pid";
+ 
+@@ -81,8 +81,8 @@ const char * minissdpdsocketpath = "/var/run/minissdpd.sock";
+ /* UPnP-A/V [DLNA] */
+ sqlite3 *db;
+ char friendly_name[FRIENDLYNAME_MAX_LEN];
+-char db_path[PATH_MAX] = {'\0'};
+-char log_path[PATH_MAX] = {'\0'};
++char db_path[1024] = {'\0'};
++char log_path[1024] = {'\0'};
+ struct media_dir_s * media_dirs = NULL;
+ struct album_art_name_s * album_art_names = NULL;
+ volatile short int quitting = 0;
+diff --git a/upnpglobalvars.h b/upnpglobalvars.h
+index fd2b3db..1a2fb5e 100644
+--- a/upnpglobalvars.h
++++ b/upnpglobalvars.h
+@@ -68,6 +68,12 @@
+ #define USE_FORK 1
+ #define DB_VERSION 11
+ 
++#ifdef READYNAS
++# define LOGFILE_NAME "upnp-av.log"
++#else
++# define LOGFILE_NAME "minidlna.log"
++#endif
++
+ #ifdef ENABLE_NLS
+ #define _(string) gettext(string)
+ #else
+@@ -165,6 +171,7 @@
+ 	"http-get:*:audio/mp4:*," \
+ 	"http-get:*:audio/x-wav:*," \
+ 	"http-get:*:audio/x-flac:*," \
++	"http-get:*:audio/x-dsd:*," \
+ 	"http-get:*:application/ogg:*"
+ 
+ #define DLNA_FLAG_DLNA_V1_5      0x00100000
+@@ -195,6 +202,8 @@ extern uint32_t runtime_flags;
+ #endif
+ #define SCANNING_MASK         0x0100
+ #define RESCAN_MASK           0x0200
++#define SUBTITLES_MASK        0x0400
++#define FORCE_ALPHASORT_MASK  0x0800
+ 
+ #define SETFLAG(mask)	runtime_flags |= mask
+ #define GETFLAG(mask)	(runtime_flags & mask)
+@@ -227,8 +236,8 @@ extern const char *minissdpdsocketpath;
+ extern sqlite3 *db;
+ #define FRIENDLYNAME_MAX_LEN 64
+ extern char friendly_name[];
+-extern char db_path[];
+-extern char log_path[];
++extern char db_path[1024];
++extern char log_path[1024];
+ extern struct media_dir_s *media_dirs;
+ extern struct album_art_name_s *album_art_names;
+ extern volatile short int quitting;
+diff --git a/upnphttp.c b/upnphttp.c
+index 3b4b58a..974434e 100644
+--- a/upnphttp.c
++++ b/upnphttp.c
+@@ -64,6 +64,7 @@
+ #include <limits.h>
+ 
+ #include "config.h"
++#include "event.h"
+ #include "upnpglobalvars.h"
+ #include "upnphttp.h"
+ #include "upnpdescgen.h"
+@@ -101,6 +102,7 @@ static void SendResp_caption(struct upnphttp *, char * url);
+ static void SendResp_resizedimg(struct upnphttp *, char * url);
+ static void SendResp_thumbnail(struct upnphttp *, char * url);
+ static void SendResp_dlnafile(struct upnphttp *, char * url);
++static void Process_upnphttp(struct event *ev);
+ 
+ struct upnphttp * 
+ New_upnphttp(int s)
+@@ -112,18 +114,21 @@ New_upnphttp(int s)
+ 	if(ret == NULL)
+ 		return NULL;
+ 	memset(ret, 0, sizeof(struct upnphttp));
+-	ret->socket = s;
++	ret->ev = (struct event ){ .fd = s, .rdwr = EVENT_READ, .process = Process_upnphttp, .data = ret };
++	event_module.add(&ret->ev);
+ 	return ret;
+ }
+ 
+ void
+ CloseSocket_upnphttp(struct upnphttp * h)
+ {
+-	if(close(h->socket) < 0)
++
++	event_module.del(&h->ev, EV_FLAG_CLOSING);
++	if(close(h->ev.fd) < 0)
+ 	{
+-		DPRINTF(E_ERROR, L_HTTP, "CloseSocket_upnphttp: close(%d): %s\n", h->socket, strerror(errno));
++		DPRINTF(E_ERROR, L_HTTP, "CloseSocket_upnphttp: close(%d): %s\n", h->ev.fd, strerror(errno));
+ 	}
+-	h->socket = -1;
++	h->ev.fd = -1;
+ 	h->state = 100;
+ }
+ 
+@@ -132,7 +137,7 @@ Delete_upnphttp(struct upnphttp * h)
+ {
+ 	if(h)
+ 	{
+-		if(h->socket >= 0)
++		if(h->ev.fd >= 0)
+ 			CloseSocket_upnphttp(h);
+ 		free(h->req_buf);
+ 		free(h->res_buf);
+@@ -268,14 +273,14 @@ ParseHttpHeaders(struct upnphttp * h)
+ 				p = colon + 1;
+ 				while(isspace(*p))
+ 					p++;
+-				for(n = 0; n<n_lan_addr; n++)
++				for(n = 0; n < n_lan_addr; n++)
+ 				{
+-					for(i=0; lan_addr[n].str[i]; i++)
++					for(i = 0; lan_addr[n].str[i]; i++)
+ 					{
+ 						if(lan_addr[n].str[i] != p[i])
+ 							break;
+ 					}
+-					if(!lan_addr[n].str[i])
++					if(i && !lan_addr[n].str[i])
+ 					{
+ 						h->iface = n;
+ 						break;
+@@ -1039,18 +1044,17 @@ ProcessHttpQuery_upnphttp(struct upnphttp * h)
+ 	}
+ }
+ 
+-
+-void
+-Process_upnphttp(struct upnphttp * h)
++static void
++Process_upnphttp(struct event *ev)
+ {
+ 	char buf[2048];
++	struct upnphttp *h = ev->data;
+ 	int n;
+-	if(!h)
+-		return;
++
+ 	switch(h->state)
+ 	{
+ 	case 0:
+-		n = recv(h->socket, buf, 2048, 0);
++		n = recv(h->ev.fd, buf, 2048, 0);
+ 		if(n<0)
+ 		{
+ 			DPRINTF(E_ERROR, L_HTTP, "recv (state0): %s\n", strerror(errno));
+@@ -1096,7 +1100,7 @@ Process_upnphttp(struct upnphttp * h)
+ 		break;
+ 	case 1:
+ 	case 2:
+-		n = recv(h->socket, buf, sizeof(buf), 0);
++		n = recv(h->ev.fd, buf, sizeof(buf), 0);
+ 		if(n < 0)
+ 		{
+ 			DPRINTF(E_ERROR, L_HTTP, "recv (state%d): %s\n", h->state, strerror(errno));
+@@ -1223,7 +1227,7 @@ SendResp_upnphttp(struct upnphttp * h)
+ {
+ 	int n;
+ 	DPRINTF(E_DEBUG, L_HTTP, "HTTP RESPONSE: %.*s\n", h->res_buflen, h->res_buf);
+-	n = send(h->socket, h->res_buf, h->res_buflen, 0);
++	n = send(h->ev.fd, h->res_buf, h->res_buflen, 0);
+ 	if(n<0)
+ 	{
+ 		DPRINTF(E_ERROR, L_HTTP, "send(res_buf): %s\n", strerror(errno));
+@@ -1241,7 +1245,7 @@ send_data(struct upnphttp * h, char * header, size_t size, int flags)
+ {
+ 	int n;
+ 
+-	n = send(h->socket, header, size, flags);
++	n = send(h->ev.fd, header, size, flags);
+ 	if(n<0)
+ 	{
+ 		DPRINTF(E_ERROR, L_HTTP, "send(res_buf): %s\n", strerror(errno));
+@@ -1275,7 +1279,7 @@ send_file(struct upnphttp * h, int sendfd, off_t offset, off_t end_offset)
+ 		if( try_sendfile )
+ 		{
+ 			send_size = ( ((end_offset - offset) < MAX_BUFFER_SIZE) ? (end_offset - offset + 1) : MAX_BUFFER_SIZE);
+-			ret = sys_sendfile(h->socket, sendfd, &offset, send_size);
++			ret = sys_sendfile(h->ev.fd, sendfd, &offset, send_size);
+ 			if( ret == -1 )
+ 			{
+ 				DPRINTF(E_DEBUG, L_HTTP, "sendfile error :: error no. %d [%s]\n", errno, strerror(errno));
+@@ -1305,7 +1309,7 @@ send_file(struct upnphttp * h, int sendfd, off_t offset, off_t end_offset)
+ 			else
+ 				break;
+ 		}
+-		ret = write(h->socket, buf, ret);
++		ret = write(h->ev.fd, buf, ret);
+ 		if( ret == -1 ) {
+ 			DPRINTF(E_DEBUG, L_HTTP, "write error :: error no. %d [%s]\n", errno, strerror(errno));
+ 			if( errno == EAGAIN )
+diff --git a/upnphttp.h b/upnphttp.h
+index d708946..e28a943 100644
+--- a/upnphttp.h
++++ b/upnphttp.h
+@@ -75,7 +75,7 @@ enum httpCommands {
+ };
+ 
+ struct upnphttp {
+-	int socket;
++	struct event ev;
+ 	struct in_addr clientaddr;	/* client address */
+ 	int iface;
+ 	int state;
+@@ -144,10 +144,6 @@ CloseSocket_upnphttp(struct upnphttp *);
+ void
+ Delete_upnphttp(struct upnphttp *);
+ 
+-/* Process_upnphttp() */
+-void
+-Process_upnphttp(struct upnphttp *);
+-
+ /* BuildHeader_upnphttp()
+  * build the header for the HTTP Response
+  * also allocate the buffer for body data */
+diff --git a/upnpreplyparse.c b/upnpreplyparse.c
+index 2411f05..d3243d9 100644
+--- a/upnpreplyparse.c
++++ b/upnpreplyparse.c
+@@ -122,7 +122,7 @@ DisplayNameValueList(char * buffer, int bufsize)
+ {
+     struct NameValueParserData pdata;
+     struct NameValue * nv;
+-    ParseNameValue(buffer, bufsize, &pdata);
++    ParseNameValue(buffer, bufsize, &pdata, XML_STORE_EMPTY_FL);
+     for(nv = pdata.head.lh_first;
+         nv != NULL;
+         nv = nv->entries.le_next)
+diff --git a/upnpsoap.c b/upnpsoap.c
+index 441da98..744a01b 100644
+--- a/upnpsoap.c
++++ b/upnpsoap.c
+@@ -61,6 +61,7 @@
+ #include <netdb.h>
+ #include <ctype.h>
+ 
++#include "event.h"
+ #include "upnpglobalvars.h"
+ #include "utils.h"
+ #include "upnphttp.h"
+@@ -77,6 +78,8 @@
+ #else
+ # define __SORT_LIMIT
+ #endif
++#define NON_ZERO(x) (x && atoi(x))
++#define IS_ZERO(x) (!x || !atoi(x))
+ 
+ /* Standard Errors:
+  *
+@@ -96,8 +99,9 @@
+  * 800-899 	TBD 			Action-specific errors for non-standard actions.
+  * 							Defined by UPnP vendor.
+ */
++#define SoapError(x,y,z) _SoapError(x,y,z,__func__)
+ static void
+-SoapError(struct upnphttp * h, int errCode, const char * errDesc)
++_SoapError(struct upnphttp * h, int errCode, const char * errDesc, const char *func)
+ {
+ 	static const char resp[] =
+ 		"<s:Envelope "
+@@ -120,7 +124,7 @@ SoapError(struct upnphttp * h, int errCode, const char * errDesc)
+ 	char body[2048];
+ 	int bodylen;
+ 
+-	DPRINTF(E_WARN, L_HTTP, "Returning UPnPError %d: %s\n", errCode, errDesc);
++	DPRINTF(E_WARN, L_HTTP, "%s Returning UPnPError %d: %s\n", func, errCode, errDesc);
+ 	bodylen = snprintf(body, sizeof(body), resp, errCode, errDesc);
+ 	BuildResp2_upnphttp(h, 500, "Internal Server Error", body, bodylen);
+ 	SendResp_upnphttp(h);
+@@ -261,6 +265,7 @@ GetSortCapabilities(struct upnphttp * h, const char * action)
+ 		  "dc:date,"
+ 		  "upnp:class,"
+ 		  "upnp:album,"
++		  "upnp:episodeNumber,"
+ 		  "upnp:originalTrackNumber"
+ 		"</SortCaps>"
+ 		"</u:%sResponse>";
+@@ -388,22 +393,25 @@ GetCurrentConnectionInfo(struct upnphttp * h, const char * action)
+ #define FILTER_UPNP_ALBUMARTURI			0x00010000
+ #define FILTER_UPNP_ALBUMARTURI_DLNA_PROFILEID	0x00020000
+ #define FILTER_UPNP_ARTIST			0x00040000
+-#define FILTER_UPNP_GENRE			0x00080000
+-#define FILTER_UPNP_ORIGINALTRACKNUMBER		0x00100000
+-#define FILTER_UPNP_SEARCHCLASS			0x00200000
+-#define FILTER_UPNP_STORAGEUSED			0x00400000
++#define FILTER_UPNP_EPISODENUMBER		0x00080000
++#define FILTER_UPNP_EPISODESEASON		0x00100000
++#define FILTER_UPNP_GENRE			0x00200000
++#define FILTER_UPNP_ORIGINALTRACKNUMBER		0x00400000
++#define FILTER_UPNP_SEARCHCLASS			0x00800000
++#define FILTER_UPNP_STORAGEUSED			0x01000000
+ /* Not normally used, so leave out of the default filter */
+-#define FILTER_UPNP_PLAYBACKCOUNT		0x01000000
+-#define FILTER_UPNP_LASTPLAYBACKPOSITION	0x02000000
++#define FILTER_UPNP_PLAYBACKCOUNT		0x02000000
++#define FILTER_UPNP_LASTPLAYBACKPOSITION	0x04000000
+ /* Vendor-specific filter flags */
+-#define FILTER_SEC_CAPTION_INFO_EX		0x04000000
+-#define FILTER_SEC_DCM_INFO			0x08000000
+-#define FILTER_PV_SUBTITLE_FILE_TYPE		0x10000000
+-#define FILTER_PV_SUBTITLE_FILE_URI		0x20000000
+-#define FILTER_PV_SUBTITLE			0x30000000
+-#define FILTER_AV_MEDIA_CLASS			0x40000000
++#define FILTER_SEC_CAPTION_INFO_EX		0x08000000
++#define FILTER_SEC_DCM_INFO			0x10000000
++#define FILTER_SEC				0x18000000
++#define FILTER_PV_SUBTITLE_FILE_TYPE		0x20000000
++#define FILTER_PV_SUBTITLE_FILE_URI		0x40000000
++#define FILTER_PV_SUBTITLE			0x60000000
++#define FILTER_AV_MEDIA_CLASS			0x80000000
+ /* Masks */
+-#define STANDARD_FILTER_MASK			0x00FFFFFF
++#define STANDARD_FILTER_MASK			0x01FFFFFF
+ #define FILTER_BOOKMARK_MASK			(FILTER_UPNP_PLAYBACKCOUNT | \
+ 						 FILTER_UPNP_LASTPLAYBACKPOSITION | \
+ 						 FILTER_SEC_DCM_INFO)
+@@ -574,6 +582,14 @@ set_filter_flags(char *filter, struct upnphttp *h)
+ 		{
+ 			flags |= FILTER_AV_MEDIA_CLASS;
+ 		}
++		else if( strcmp(item, "upnp:episodeNumber") == 0 )
++		{
++			flags |= FILTER_UPNP_EPISODENUMBER;
++		}
++		else if( strcmp(item, "upnp:episodeSeason") == 0 )
++		{
++			flags |= FILTER_UPNP_EPISODESEASON;
++		}
+ 		item = strtok_r(NULL, ",", &saveptr);
+ 	}
+ 
+@@ -634,9 +650,10 @@ parse_sort_criteria(char *sortCriteria, int *error)
+ 		{
+ 			strcatf(&str, "d.DATE");
+ 		}
+-		else if( strcasecmp(item, "upnp:originalTrackNumber") == 0 )
++		else if( strcasecmp(item, "upnp:originalTrackNumber") == 0 ||
++			 strcasecmp(item, "upnp:episodeNumber") == 0 )
+ 		{
+-			strcatf(&str, "d.DISC, d.TRACK");
++			strcatf(&str, "d.DISC%s, d.TRACK", reverse ? " DESC" : "");
+ 		}
+ 		else if( strcasecmp(item, "upnp:album") == 0 )
+ 		{
+@@ -678,6 +695,35 @@ parse_sort_criteria(char *sortCriteria, int *error)
+ 	return order;
+ }
+ 
++static void
++_alphasort_alt_title(char **title, char **alt_title, int requested, int returned, const char *disc, const char *track)
++{
++	char *old_title = *alt_title ?: NULL;
++	char buf[8];
++	int pad;
++	int ret;
++
++	snprintf(buf, sizeof(buf), "%d", requested);
++	pad = strlen(buf);
++
++	if (NON_ZERO(track) && !strstr(*title, track)) {
++		if (NON_ZERO(disc))
++			ret = asprintf(alt_title, "%0*d %s.%s %s",
++					pad, returned, disc, track, *title);
++		else
++			ret = asprintf(alt_title, "%0*d %s %s",
++					pad, returned, track, *title);
++	}
++	else
++		ret = asprintf(alt_title, "%0*d %s", pad, returned, *title);
++
++	if (ret > 0)
++		*title = *alt_title;
++	else
++		*alt_title = NULL;
++	free(old_title);
++}
++
+ inline static void
+ add_resized_res(int srcw, int srch, int reqw, int reqh, char *dlna_pn,
+                 char *detailID, struct Response *args)
+@@ -783,9 +829,6 @@ object_exists(const char *object)
+                 " d.THUMBNAIL, d.CREATOR, d.DLNA_PN, d.MIME, d.ALBUM_ART, d.ROTATION, d.DISC "
+ #define SELECT_COLUMNS "SELECT o.OBJECT_ID, o.PARENT_ID, o.REF_ID, " COLUMNS
+ 
+-#define NON_ZERO(x) (x && atoi(x))
+-#define IS_ZERO(x) (!x || !atoi(x))
+-
+ static int
+ callback(void *args, int argc, char **argv, char **azColName)
+ {
+@@ -793,7 +836,7 @@ callback(void *args, int argc, char **argv, char **azColName)
+ 	char *id = argv[0], *parent = argv[1], *refID = argv[2], *detailID = argv[3], *class = argv[4], *size = argv[5], *title = argv[6],
+ 	     *duration = argv[7], *bitrate = argv[8], *sampleFrequency = argv[9], *artist = argv[10], *album = argv[11],
+ 	     *genre = argv[12], *comment = argv[13], *nrAudioChannels = argv[14], *track = argv[15], *date = argv[16], *resolution = argv[17],
+-	     *tn = argv[18], *creator = argv[19], *dlna_pn = argv[20], *mime = argv[21], *album_art = argv[22], *rotate = argv[23];
++	     *tn = argv[18], *creator = argv[19], *dlna_pn = argv[20], *mime = argv[21], *album_art = argv[22], *rotate = argv[23], *disc = argv[24];
+ 	char dlna_buf[128];
+ 	const char *ext;
+ 	struct string_s *str = passed_args->str;
+@@ -815,15 +858,17 @@ callback(void *args, int argc, char **argv, char **azColName)
+ 			}
+ 			else
+ 			{
+-				DPRINTF(E_ERROR, L_HTTP, "UPnP SOAP response was too big, and realloc failed!\n");
+-				return -1;
++				DPRINTF(E_ERROR, L_HTTP, "UPnP SOAP response truncated, realloc failed\n");
++				passed_args->flags |= RESPONSE_TRUNCATED;
++				return 1;
+ 			}
+ #if MAX_RESPONSE_SIZE > 0
+ 		}
+ 		else
+ 		{
+-			DPRINTF(E_ERROR, L_HTTP, "UPnP SOAP response cut short, to not exceed the max response size [%lld]!\n", (long long int)MAX_RESPONSE_SIZE);
+-			return -1;
++			DPRINTF(E_ERROR, L_HTTP, "UPnP SOAP response would exceed the max response size [%lld], truncating\n", (long long int)MAX_RESPONSE_SIZE);
++			passed_args->flags |= RESPONSE_TRUNCATED;
++			return 1;
+ 		}
+ #endif
+ 	}
+@@ -838,6 +883,10 @@ callback(void *args, int argc, char **argv, char **azColName)
+ 		if( *mime == 'v' )
+ 		{
+ 			dlna_flags |= DLNA_FLAG_TM_S;
++			if (GETFLAG(SUBTITLES_MASK) &&
++			    (passed_args->client >= EStandardDLNA150 || !passed_args->client))
++				passed_args->flags |= FLAG_CAPTION_RES;
++
+ 			if( passed_args->flags & FLAG_MIME_AVI_DIVX )
+ 			{
+ 				if( strcmp(mime, "video/x-msvideo") == 0 )
+@@ -930,6 +979,9 @@ callback(void *args, int argc, char **argv, char **azColName)
+ 		}
+ 		else
+ 			dlna_flags |= DLNA_FLAG_TM_I;
++		/* Force an alphabetical sort, for clients that like to do their own sorting */
++		if( GETFLAG(FORCE_ALPHASORT_MASK) )
++			_alphasort_alt_title(&title, &alt_title, passed_args->requested, passed_args->returned, disc, track);
+ 
+ 		if( passed_args->flags & FLAG_SKIP_DLNA_PN )
+ 			dlna_pn = NULL;
+@@ -968,22 +1020,27 @@ callback(void *args, int argc, char **argv, char **azColName)
+ 		if( (passed_args->filter & FILTER_BOOKMARK_MASK) ) {
+ 			/* Get bookmark */
+ 			int sec = sql_get_int_field(db, "SELECT SEC from BOOKMARKS where ID = '%s'", detailID);
+-			if( sec > 0 && (passed_args->filter & FILTER_UPNP_LASTPLAYBACKPOSITION) ) {
++			if( sec > 0 ) {
+ 				/* This format is wrong according to the UPnP/AV spec.  It should be in duration format,
+ 				** so HH:MM:SS. But Kodi seems to be the only user of this tag, and it only works with a
+ 				** raw seconds value.
+ 				** If Kodi gets fixed, we can use duration_str(sec * 1000) here */
+-				ret = strcatf(str, "&lt;upnp:lastPlaybackPosition&gt;%d&lt;/upnp:lastPlaybackPosition&gt;",
+-				              sec);
++				if( passed_args->flags & FLAG_CONVERT_MS ) {
++					sec *= 1000;
++				}
++				if( passed_args->filter & FILTER_UPNP_LASTPLAYBACKPOSITION )
++					ret = strcatf(str, "&lt;upnp:lastPlaybackPosition&gt;%d&lt;/upnp:lastPlaybackPosition&gt;",
++					              sec);
++				if( passed_args->filter & FILTER_SEC_DCM_INFO )
++					ret = strcatf(str, "&lt;sec:dcmInfo&gt;CREATIONDATE=0,FOLDER=%s,BM=%d&lt;/sec:dcmInfo&gt;",
++					              title, sec);
+ 			}
+-			if( passed_args->filter & FILTER_SEC_DCM_INFO )
+-				ret = strcatf(str, "&lt;sec:dcmInfo&gt;CREATIONDATE=0,FOLDER=%s,BM=%d&lt;/sec:dcmInfo&gt;",
+-				              title, sec);
+ 			if( passed_args->filter & FILTER_UPNP_PLAYBACKCOUNT ) {
+ 				ret = strcatf(str, "&lt;upnp:playbackCount&gt;%d&lt;/upnp:playbackCount&gt;",
+ 				              sql_get_int_field(db, "SELECT WATCH_COUNT from BOOKMARKS where ID = '%s'", detailID));
+ 			}
+ 		}
++		free(alt_title);
+ 		if( artist ) {
+ 			if( (*mime == 'v') && (passed_args->filter & FILTER_UPNP_ACTOR) ) {
+ 				ret = strcatf(str, "&lt;upnp:actor&gt;%s&lt;/upnp:actor&gt;", artist);
+@@ -1001,8 +1058,15 @@ callback(void *args, int argc, char **argv, char **azColName)
+ 		if( strncmp(id, MUSIC_PLIST_ID, strlen(MUSIC_PLIST_ID)) == 0 ) {
+ 			track = strrchr(id, '$')+1;
+ 		}
+-		if( NON_ZERO(track) && (passed_args->filter & FILTER_UPNP_ORIGINALTRACKNUMBER) ) {
+-			ret = strcatf(str, "&lt;upnp:originalTrackNumber&gt;%s&lt;/upnp:originalTrackNumber&gt;", track);
++		if( NON_ZERO(track) ) {
++			if( *mime == 'a' && (passed_args->filter & FILTER_UPNP_ORIGINALTRACKNUMBER) ) {
++				ret = strcatf(str, "&lt;upnp:originalTrackNumber&gt;%s&lt;/upnp:originalTrackNumber&gt;", track);
++			} else if( *mime == 'v' ) {
++				if( NON_ZERO(disc) && (passed_args->filter & FILTER_UPNP_EPISODESEASON) )
++					ret = strcatf(str, "&lt;upnp:episodeSeason&gt;%s&lt;/upnp:episodeSeason&gt;", disc);
++				if( passed_args->filter & FILTER_UPNP_EPISODENUMBER )
++					ret = strcatf(str, "&lt;upnp:episodeNumber&gt;%s&lt;/upnp:episodeNumber&gt;", track);
++			}
+ 		}
+ 		if( passed_args->filter & FILTER_RES ) {
+ 			ext = mime_to_ext(mime);
+@@ -1114,7 +1178,6 @@ callback(void *args, int argc, char **argv, char **azColName)
+ 							                   "&lt;/sec:CaptionInfoEx&gt;",
+ 							                   lan_addr[passed_args->iface].str, runtime_vars.port, detailID);
+ 					}
+-					free(alt_title);
+ 					break;
+ 				}
+ 			}
+@@ -1299,6 +1362,8 @@ BrowseContentDirectory(struct upnphttp * h, const char * action)
+ 		ret = strcatf(&str, DLNA_NAMESPACE);
+ 	if( args.filter & FILTER_PV_SUBTITLE )
+ 		ret = strcatf(&str, PV_NAMESPACE);
++	if( args.filter & FILTER_SEC )
++		ret = strcatf(&str, SEC_NAMESPACE);
+ 	strcatf(&str, "&gt;\n");
+ 
+ 	args.returned = 0;
+@@ -1415,12 +1480,19 @@ BrowseContentDirectory(struct upnphttp * h, const char * action)
+ 		DPRINTF(E_DEBUG, L_HTTP, "Browse SQL: %s\n", sql);
+ 		ret = sqlite3_exec(db, sql, callback, (void *) &args, &zErrMsg);
+ 	}
+-	if( (ret != SQLITE_OK) && (zErrMsg != NULL) )
++	if( ret != SQLITE_OK )
+ 	{
+-		DPRINTF(E_WARN, L_HTTP, "SQL error: %s\nBAD SQL: %s\n", zErrMsg, sql);
+-		sqlite3_free(zErrMsg);
+-		SoapError(h, 709, "Unsupported or invalid sort criteria");
+-		goto browse_error;
++		if( args.flags & RESPONSE_TRUNCATED )
++		{
++			sqlite3_free(zErrMsg);
++		}
++		else
++		{
++			DPRINTF(E_WARN, L_HTTP, "SQL error: %s\nBAD SQL: %s\n", zErrMsg, sql);
++			sqlite3_free(zErrMsg);
++			SoapError(h, 709, "Unsupported or invalid sort criteria");
++			goto browse_error;
++		}
+ 	}
+ 	sqlite3_free(sql);
+ 	/* Does the object even exist? */
+@@ -1462,7 +1534,7 @@ parse_search_criteria(const char *str, char *sep)
+ {
+ 	struct string_s criteria;
+ 	int len;
+-	int literal = 0, like = 0;
++	int literal = 0, like = 0, class = 0;
+ 	const char *s;
+ 
+ 	if (!str)
+@@ -1512,13 +1584,17 @@ parse_search_criteria(const char *str, char *sep)
+ 				}
+ 				break;
+ 			case 'o':
+-				if (strncmp(s, "object.", 7) == 0)
+-					s += 7;
+-				else if (strncmp(s, "object\"", 7) == 0 ||
+-				         strncmp(s, "object&quot;", 12) == 0)
++				if (class)
+ 				{
+-					s += 6;
+-					continue;
++					class = 0;
++					if (strncmp(s, "object.", 7) == 0)
++						s += 7;
++					else if (strncmp(s, "object\"", 7) == 0 ||
++					         strncmp(s, "object&quot;", 12) == 0)
++					{
++						s += 6;
++						continue;
++					}
+ 				}
+ 			default:
+ 				charcat(&criteria, *s);
+@@ -1660,11 +1736,29 @@ parse_search_criteria(const char *str, char *sep)
+ 				else
+ 					charcat(&criteria, *s);
+ 				break;
++			case 'o':
++				if (class)
++				{
++					if (strncmp(s, "object.", 7) == 0)
++					{
++						s += 7;
++						charcat(&criteria, '"');
++						while (*s && !isspace(*s))
++						{
++							charcat(&criteria, *s);
++							s++;
++						}
++						charcat(&criteria, '"');
++					}
++					class = 0;
++					continue;
++				}
+ 			case 'u':
+ 				if (strncmp(s, "upnp:class", 10) == 0)
+ 				{
+ 					strcatf(&criteria, "o.CLASS");
+ 					s += 10;
++					class = 1;
+ 					continue;
+ 				}
+ 				else if (strncmp(s, "upnp:actor", 10) == 0)
+@@ -1851,9 +1945,10 @@ SearchContentDirectory(struct upnphttp * h, const char * action)
+ 	                      orderBy, StartingIndex, RequestedCount);
+ 	DPRINTF(E_DEBUG, L_HTTP, "Search SQL: %s\n", sql);
+ 	ret = sqlite3_exec(db, sql, callback, (void *) &args, &zErrMsg);
+-	if( (ret != SQLITE_OK) && (zErrMsg != NULL) )
++	if( ret != SQLITE_OK )
+ 	{
+-		DPRINTF(E_WARN, L_HTTP, "SQL error: %s\nBAD SQL: %s\n", zErrMsg, sql);
++		if( !(args.flags & RESPONSE_TRUNCATED) )
++			DPRINTF(E_WARN, L_HTTP, "SQL error: %s\nBAD SQL: %s\n", zErrMsg, sql);
+ 		sqlite3_free(zErrMsg);
+ 	}
+ 	sqlite3_free(sql);
+@@ -1920,6 +2015,31 @@ QueryStateVariable(struct upnphttp * h, const char * action)
+ 	ClearNameValueList(&data);
+ }
+ 
++static int _set_watch_count(long long id, const char *old, const char *new)
++{
++	int64_t rowid = sqlite3_last_insert_rowid(db);
++	int ret;
++
++	ret = sql_exec(db, "INSERT or IGNORE into BOOKMARKS (ID, WATCH_COUNT)"
++			   " VALUES (%lld, %Q)", id, new ?: "1");
++	if (sqlite3_last_insert_rowid(db) != rowid)
++		return 0;
++
++	if (!new) /* Increment */
++		ret = sql_exec(db, "UPDATE BOOKMARKS set WATCH_COUNT ="
++				   " ifnull(WATCH_COUNT,'0') + 1"
++				   " where ID = %lld", id);
++	else if (old && old[0])
++		ret = sql_exec(db, "UPDATE BOOKMARKS set WATCH_COUNT = %Q"
++				   " where WATCH_COUNT = %Q and ID = %lld",
++				   new, old, id);
++	else
++		ret = sql_exec(db, "UPDATE BOOKMARKS set WATCH_COUNT = %Q"
++				   " where ID = %lld",
++				   new, id);
++	return ret;
++}
++
+ /* For some reason, Kodi does URI encoding and appends a trailing slash */
+ static void _kodi_decode(char *str)
+ {
+@@ -2008,20 +2128,15 @@ static void UpdateObject(struct upnphttp * h, const char * action)
+ 		/* Kodi uses incorrect tag "upnp:playCount" instead of "upnp:playbackCount" */
+ 		if (strcmp(tag, "upnp:playbackCount") == 0 || strcmp(tag, "upnp:playCount") == 0)
+ 		{
+-			//ret = sql_exec(db, "INSERT OR IGNORE into BOOKMARKS (ID, WATCH_COUNT)"
+-			ret = sql_exec(db, "INSERT into BOOKMARKS (ID, WATCH_COUNT)"
+-					   " VALUES (%lld, %Q)", (long long)detailID, new);
+-			if (atoi(new))
+-				ret = sql_exec(db, "UPDATE BOOKMARKS set WATCH_COUNT = %Q"
+-						   " where WATCH_COUNT = %Q and ID = %lld",
+-						   new, current, (long long)detailID);
+-			else
+-				ret = sql_exec(db, "UPDATE BOOKMARKS set WATCH_COUNT = 0"
+-						   " where ID = %lld", (long long)detailID);
++			ret = _set_watch_count(detailID, current, new);
+ 		}
+ 		else if (strcmp(tag, "upnp:lastPlaybackPosition") == 0)
+ 		{
++
+ 			int sec = duration_sec(new);
++			if( h->req_client && (h->req_client->type->flags & FLAG_CONVERT_MS) ) {
++				sec /= 1000;
++			}
+ 			if (sec < 30)
+ 				sec = 0;
+ 			else
+@@ -2118,6 +2233,9 @@ SamsungSetBookmark(struct upnphttp * h, const char * action)
+ 		in_magic_container(ObjectID, 0, &rid);
+ 		detailID = sql_get_int64_field(db, "SELECT DETAIL_ID from OBJECTS where OBJECT_ID = '%q'", rid);
+ 
++		if( h->req_client && (h->req_client->type->flags & FLAG_CONVERT_MS) ) {
++			sec /= 1000;
++		}
+ 		if ( sec < 30 )
+ 			sec = 0;
+ 		ret = sql_exec(db, "INSERT OR IGNORE into BOOKMARKS (ID, SEC)"
+diff --git a/upnpsoap.h b/upnpsoap.h
+index b3e94a0..aee83a3f 100644
+--- a/upnpsoap.h
++++ b/upnpsoap.h
+@@ -32,6 +32,8 @@
+ 	" xmlns:dlna=\"urn:schemas-dlna-org:metadata-1-0/\""
+ #define PV_NAMESPACE \
+ 	" xmlns:pv=\"http://www.pv.com/pvns/\""
++#define SEC_NAMESPACE \
++	" xmlns:sec=\"http://www.sec.co.kr/dlna\""
+ 
+ struct Response
+ {
+diff --git a/utils.c b/utils.c
+index fc21b7f..dc936f9 100644
+--- a/utils.c
++++ b/utils.c
+@@ -347,6 +347,8 @@ mime_to_ext(const char * mime)
+ 				return "3gp";
+ 			else if( strcmp(mime, "application/ogg") == 0 )
+ 				return "ogg";
++			else if( strcmp(mime+6, "x-dsd") == 0 )
++				return "dsd";
+ 			break;
+ 		case 'v':
+ 			if( strcmp(mime+6, "avi") == 0 )
+@@ -414,7 +416,8 @@ is_audio(const char * file)
+ 		ends_with(file, ".m4a") || ends_with(file, ".aac")  ||
+ 		ends_with(file, ".mp4") || ends_with(file, ".m4p")  ||
+ 		ends_with(file, ".wav") || ends_with(file, ".ogg")  ||
+-		ends_with(file, ".pcm") || ends_with(file, ".3gp"));
++		ends_with(file, ".pcm") || ends_with(file, ".3gp")  ||
++		ends_with(file, ".dsf") || ends_with(file, ".dff"));
+ }
+ 
+ int
+@@ -531,3 +534,43 @@ valid_media_types(const char *path)
+ 
+ 	return ALL_MEDIA;
+ }
++
++/*
++ * Add and subtract routines for timevals.
++ * N.B.: subtract routine doesn't deal with
++ * results which are before the beginning,
++ * it just gets very confused in this case.
++ * Caveat emptor.
++ */
++static void	timevalfix(struct timeval *);
++void
++timevaladd(struct timeval *t1, const struct timeval *t2)
++{
++
++	t1->tv_sec += t2->tv_sec;
++	t1->tv_usec += t2->tv_usec;
++	timevalfix(t1);
++}
++
++void
++timevalsub(struct timeval *t1, const struct timeval *t2)
++{
++
++	t1->tv_sec -= t2->tv_sec;
++	t1->tv_usec -= t2->tv_usec;
++	timevalfix(t1);
++}
++
++static void
++timevalfix(struct timeval *t1)
++{
++
++	if (t1->tv_usec < 0) {
++		t1->tv_sec--;
++		t1->tv_usec += 1000000;
++	}
++	if (t1->tv_usec >= 1000000) {
++		t1->tv_sec++;
++		t1->tv_usec -= 1000000;
++	}
++}
+diff --git a/utils.h b/utils.h
+index a200756..1cd7546 100644
+--- a/utils.h
++++ b/utils.h
+@@ -101,4 +101,12 @@ const char *mime_to_ext(const char * mime);
+ int make_dir(char * path, mode_t mode);
+ unsigned int DJBHash(uint8_t *data, int len);
+ 
++/* Timeval manipulations */
++void	timevaladd(struct timeval *t1, const struct timeval *t2);
++void	timevalsub(struct timeval *t1, const struct timeval *t2);
++#define	timevalcmp(tvp, uvp, cmp)					\
++	(((tvp)->tv_sec == (uvp)->tv_sec) ?				\
++	    ((tvp)->tv_usec cmp (uvp)->tv_usec) :			\
++	    ((tvp)->tv_sec cmp (uvp)->tv_sec))
++
+ #endif
+diff --git a/uuid.c b/uuid.c
+index 3cd6f5a..6e6a9ec 100644
+--- a/uuid.c
++++ b/uuid.c
+@@ -39,6 +39,7 @@
+ #include <sys/syscall.h>
+ #endif
+ 
++#include "event.h"
+ #include "uuid.h"
+ #include "getifaddr.h"
+ #include "log.h"
