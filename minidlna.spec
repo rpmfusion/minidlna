@@ -2,7 +2,7 @@
 
 Name:           minidlna
 Version:        1.2.1
-Release:        11%{?dist}
+Release:        12%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 License:        GPLv2
@@ -13,7 +13,10 @@ Source1:        %{name}.service
 # tmpfiles configuration for the /run directory
 Source2:        %{name}-tmpfiles.conf
 
+Patch1:         v1_2_1..0763719f2776f91114bc5564919896f28e078c77.patch
+
 BuildRequires:  gcc
+BuildRequires:  libtool
 BuildRequires:  avahi-devel
 BuildRequires:  libuuid-devel
 BuildRequires:  ffmpeg-devel
@@ -47,6 +50,7 @@ sed -i 's/#log_dir=\/var\/log/#log_dir=\/var\/log\/minidlna/' \
 
 
 %build
+./autogen.sh
 %configure \
   --disable-silent-rules \
   --with-db-path=%{_localstatedir}/cache/%{name} \
@@ -123,6 +127,9 @@ exit 0
 
 
 %changelog
+* Mon Apr 27 2020 Sérgio Basto <sergio@serjux.com> - 1.2.1-12
+- Update to git master because subtitles stopped to working on updated apps like vlc or kodi
+
 * Sat Feb 22 2020 RPM Fusion Release Engineering <leigh123linux@googlemail.com> - 1.2.1-11
 - Rebuild for ffmpeg-4.3 git
 
