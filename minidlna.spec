@@ -1,8 +1,6 @@
-%define _legacy_common_support 1
-
 Name:           minidlna
-Version:        1.2.1
-Release:        12%{?dist}
+Version:        1.3.0
+Release:        1%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 License:        GPLv2
@@ -12,7 +10,11 @@ Source0:        http://downloads.sourceforge.net/%{name}/%{version}/%{name}-%{ve
 Source1:        %{name}.service
 # tmpfiles configuration for the /run directory
 Source2:        %{name}-tmpfiles.conf
+# Fix compiling with -fno-common
+# https://sourceforge.net/p/minidlna/bugs/332/
+Patch0:         %{name}-1.3.0-fno-common.patch
 
+BuildRequires:  make
 BuildRequires:  gcc
 BuildRequires:  avahi-devel
 BuildRequires:  libuuid-devel
@@ -23,6 +25,7 @@ BuildRequires:  flac-devel
 BuildRequires:  libid3tag-devel
 BuildRequires:  libjpeg-devel
 BuildRequires:  libexif-devel
+BuildRequires:  zlib-devel
 BuildRequires:  gettext
 BuildRequires:  systemd
 Requires(pre):  shadow-utils
@@ -123,6 +126,9 @@ exit 0
 
 
 %changelog
+* Wed Dec  9 11:29:39 CET 2020 Andrea Musuruane <musuruan@gmail.com> - 1.3.0-1
+- Updated to new upstream release
+
 * Tue Aug 18 2020 RPM Fusion Release Engineering <leigh123linux@gmail.com> - 1.2.1-12
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_33_Mass_Rebuild
 
