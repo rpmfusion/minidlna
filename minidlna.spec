@@ -54,7 +54,8 @@ sed -i 's/#log_dir=\/var\/log/#log_dir=\/var\/log\/minidlna/' \
   --disable-silent-rules \
   --with-db-path=%{_localstatedir}/cache/%{name} \
   --with-log-path=%{_localstatedir}/log/%{name} \
-  --enable-tivo
+  --enable-tivo \
+  --enable-lto
 
 %make_build
 
