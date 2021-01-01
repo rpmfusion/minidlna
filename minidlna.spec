@@ -1,3 +1,4 @@
+%global _lto_cflags %{nil}
 Name:           minidlna
 Version:        1.3.0
 Release:        2%{?dist}
