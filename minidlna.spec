@@ -1,7 +1,8 @@
 %global _lto_cflags %{nil}
+
 Name:           minidlna
 Version:        1.3.0
-Release:        3%{?dist}
+Release:        4%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 License:        GPLv2
@@ -14,6 +15,12 @@ Source2:        %{name}-tmpfiles.conf
 # Fix compiling with -fno-common
 # https://sourceforge.net/p/minidlna/bugs/332/
 Patch0:         %{name}-1.3.0-fno-common.patch
+# Fix core dump
+# https://sourceforge.net/p/minidlna/bugs/333/
+Patch1:         %{name}-1.3.0-select_use_after_free.patch
+# Fix leaked sockets by correctly initialising the ev struct
+# https://bugs.gentoo.org/768030
+Patch2:         %{name}-1.3.0-fd-leak.patch
 
 BuildRequires:  make
 BuildRequires:  gcc
@@ -127,6 +134,10 @@ exit 0
 
 
 %changelog
+* Sat Mar 20 2021 Andrea Musuruane <musuruan@gmail.com> - 1.3.0-4
+- Fix core dump (BZ #5938)
+- Fix leaked sockets by correctly initialising the ev struct
+
 * Wed Feb 03 2021 RPM Fusion Release Engineering <leigh123linux@gmail.com> - 1.3.0-3
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_34_Mass_Rebuild
 
