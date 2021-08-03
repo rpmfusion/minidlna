@@ -2,7 +2,7 @@
 
 Name:           minidlna
 Version:        1.3.0
-Release:        4%{?dist}
+Release:        5%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 License:        GPLv2
@@ -134,6 +134,9 @@ exit 0
 
 
 %changelog
+* Tue Aug 03 2021 RPM Fusion Release Engineering <leigh123linux@gmail.com> - 1.3.0-5
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_35_Mass_Rebuild
+
 * Sat Mar 20 2021 Andrea Musuruane <musuruan@gmail.com> - 1.3.0-4
 - Fix core dump (BZ #5938)
 - Fix leaked sockets by correctly initialising the ev struct
