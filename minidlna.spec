@@ -1,8 +1,6 @@
-%global _lto_cflags %{nil}
-
 Name:           minidlna
-Version:        1.3.0
-Release:        8%{?dist}
+Version:        1.3.2
+Release:        1%{?dist}
 Summary:        Lightweight DLNA/UPnP-AV server targeted at embedded systems
 
 License:        GPLv2
@@ -12,15 +10,9 @@ Source0:        http://downloads.sourceforge.net/%{name}/%{version}/%{name}-%{ve
 Source1:        %{name}.service
 # tmpfiles configuration for the /run directory
 Source2:        %{name}-tmpfiles.conf
-# Fix compiling with -fno-common
-# https://sourceforge.net/p/minidlna/bugs/332/
-Patch0:         %{name}-1.3.0-fno-common.patch
 # Fix core dump
 # https://sourceforge.net/p/minidlna/bugs/333/
-Patch1:         %{name}-1.3.0-select_use_after_free.patch
-# Fix leaked sockets by correctly initialising the ev struct
-# https://bugs.gentoo.org/768030
-Patch2:         %{name}-1.3.0-fd-leak.patch
+Patch0:         %{name}-1.3.0-select_use_after_free.patch
 
 BuildRequires:  make
 BuildRequires:  gcc
@@ -134,6 +126,9 @@ exit 0
 
 
 %changelog
+* Thu Sep 01 2022 Andrea Musuruane <musuruan@gmail.com> - 1.3.2-1
+- Updated to new upstream release
+
 * Sun Aug 07 2022 RPM Fusion Release Engineering <sergiomb@rpmfusion.org> - 1.3.0-8
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_37_Mass_Rebuild and ffmpeg
   5.1
